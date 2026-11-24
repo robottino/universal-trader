@@ -48,7 +48,7 @@ risk:
   max_exposure_pct: 1.0
   max_drawdown_pct: 0.55 # compatibile con cicli BTC storici (2022 max DD ~49%)
   fee_model:
-    pct: 0.001
+    pct: 0.0
     fixed_min: 0.0
   slippage_bps: 5.0
   enable_fee_guard: false
