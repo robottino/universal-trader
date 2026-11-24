@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from universal_trader.core.config import FeeModelConfig
@@ -50,6 +51,7 @@ class SimulatedBroker:
         self.high_water_mark: float = float(initial_cash)
         self.halted: bool = False
         self._current_bar: Candle | None = None
+        self._current_bars: dict[str, Candle] = {}
         self._pending_orders: list[tuple[ApprovedOrder, Instrument]] = []
         self.fills: list[FillResult] = []
         self._order_seq: int = 0
@@ -72,6 +74,7 @@ class SimulatedBroker:
     def on_new_bar(self, bar: Candle, instrument: Instrument) -> list[FillResult]:
         """Advance simulation clock to `bar` and execute any queued next_open orders at `bar.open`."""
         self._current_bar = bar
+        self._current_bars[instrument.id] = bar
         executed: list[FillResult] = []
         if self._pending_orders:
             queue = list(self._pending_orders)
@@ -92,32 +95,92 @@ class SimulatedBroker:
             self.halted = True
         return executed
 
-    def set_current_bar(self, bar: Candle) -> None:
+    def on_new_bars(
+        self,
+        bars: dict[str, Candle],
+        instruments: Sequence[Instrument],
+    ) -> list[FillResult]:
+        """Advance multi-asset simulation clock and execute queued next_open orders (SELLs before BUYs)."""
+        self._current_bars.update(bars)
+        if bars:
+            self._current_bar = next(iter(bars.values()))
+        executed: list[FillResult] = []
+        if self._pending_orders:
+            queue = list(self._pending_orders)
+            self._pending_orders.clear()
+            # Execute SELL orders before BUY orders so freed cash is immediately available for rotation
+            sells = [(o, inst) for o, inst in queue if o.side == OrderSide.SELL]
+            buys = [(o, inst) for o, inst in queue if o.side != OrderSide.SELL]
+            for pending_order, inst in [*sells, *buys]:
+                inst_bar = bars.get(inst.id) or self._current_bars.get(inst.id)
+                if inst_bar is None:
+                    continue
+                fill = self._execute_at_price(
+                    order=pending_order,
+                    instrument=inst,
+                    base_price=inst_bar.open,
+                    fill_ts=inst_bar.timestamp,
+                )
+                executed.append(fill)
+        pf = self.get_multi_portfolio(instruments)
+        if pf.equity > self.high_water_mark:
+            self.high_water_mark = pf.equity
+        if pf.drawdown >= self.max_drawdown_pct:
+            self.halted = True
+        return executed
+
+    def set_current_bar(self, bar: Candle, instrument_id: str | None = None) -> None:
         self._current_bar = bar
+        if instrument_id is not None:
+            self._current_bars[instrument_id] = bar
 
     def get_quote(self, instrument: Instrument) -> Quote:
-        if self._current_bar is None:
+        bar = self._current_bars.get(instrument.id) or self._current_bar
+        if bar is None:
             raise RuntimeError("SimulatedBroker has no active bar; call on_new_bar or set_current_bar first")
-        return self._quote_from_price(instrument, self._current_bar.close, self._current_bar.timestamp)
+        return self._quote_from_price(instrument, bar.close, bar.timestamp)
 
     def get_portfolio(self, instrument: Instrument, quote: Quote | None = None) -> PortfolioState:
-        ts = (
-            ensure_utc(quote.timestamp)
-            if quote is not None
-            else (self._current_bar.timestamp if self._current_bar is not None else datetime.now(UTC))
-        )
-        spot = (
-            quote.last
-            if quote is not None
-            else (self._current_bar.close if self._current_bar is not None else 0.0)
-        )
+        quotes = {instrument.id: quote} if quote is not None else None
+        return self.get_multi_portfolio([instrument], quotes=quotes)
+
+    def get_multi_portfolio(
+        self,
+        instruments: Sequence[Instrument],
+        quotes: dict[str, Quote] | None = None,
+    ) -> PortfolioState:
+        quote_map = quotes or {}
+        ts: datetime | None = None
+        if quote_map:
+            ts = max(ensure_utc(q.timestamp) for q in quote_map.values())
+        elif self._current_bars:
+            ts = max(b.timestamp for b in self._current_bars.values())
+        elif self._current_bar is not None:
+            ts = self._current_bar.timestamp
+        else:
+            ts = datetime.now(UTC)
+
         pos_models: dict[str, Position] = {}
         pos_value = 0.0
         for inst_id, pdata in self.positions.items():
             qty = pdata["quantity"]
             if qty <= 0:
                 continue
-            mkt_px = spot if inst_id == instrument.id and spot > 0 else pdata["avg_entry_price"]
+            q_inst = quote_map.get(inst_id)
+            bar_inst = self._current_bars.get(inst_id)
+            if q_inst is not None and q_inst.last > 0:
+                mkt_px = q_inst.last
+            elif bar_inst is not None and bar_inst.close > 0:
+                mkt_px = bar_inst.close
+            elif (
+                len(instruments) == 1
+                and inst_id == instruments[0].id
+                and self._current_bar is not None
+                and self._current_bar.close > 0
+            ):
+                mkt_px = self._current_bar.close
+            else:
+                mkt_px = pdata["avg_entry_price"]
             pos_models[inst_id] = Position(
                 instrument_id=inst_id,
                 quantity=qty,
@@ -156,8 +219,9 @@ class SimulatedBroker:
                 status=OrderStatus.PENDING,
                 raw_response={"execution_price": "next_open", "queued": True},
             )
-        base_price = self._current_bar.close if self._current_bar is not None else order.estimated_price
-        fill_ts = self._current_bar.timestamp if self._current_bar is not None else order.timestamp
+        bar = self._current_bars.get(instrument.id) or self._current_bar
+        base_price = bar.close if bar is not None else order.estimated_price
+        fill_ts = bar.timestamp if bar is not None else order.timestamp
         return self._execute_at_price(order, instrument, base_price=base_price, fill_ts=fill_ts)
 
     def _execute_at_price(

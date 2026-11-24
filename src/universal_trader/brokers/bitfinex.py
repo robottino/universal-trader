@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -53,15 +54,25 @@ class BitfinexBroker:
         self.timeout_seconds = timeout_seconds
         self.base_url = base_url.rstrip("/")
         self.pub_url = pub_url.rstrip("/")
+        self._last_nonce: int = 0
 
     def _exchange_symbol(self, instrument: Instrument) -> str:
+        if self.paper:
+            explicit_paper = instrument.provider_symbols.get("bitfinex_paper")
+            if explicit_paper:
+                return explicit_paper
+            explicit_live = instrument.provider_symbols.get("bitfinex")
+            if explicit_live and "TEST" in explicit_live.upper():
+                return explicit_live
+            base = instrument.base.upper()
+            quote = instrument.quote_currency.upper()
+            return f"tTEST{base}:TEST{quote}"
+
         explicit = instrument.provider_symbols.get("bitfinex")
-        if explicit:
+        if explicit and "TEST" not in explicit.upper():
             return explicit
         base = instrument.base.upper()
         quote = instrument.quote_currency.upper()
-        if self.paper:
-            return f"tTEST{base}:TEST{quote}"
         if len(base) == 3 and len(quote) == 3:
             return f"t{base}{quote}"
         return f"t{base}:{quote}"
@@ -73,7 +84,10 @@ class BitfinexBroker:
     def _auth_headers(self, path: str, body_str: str) -> dict[str, str]:
         if not self.api_key or not self.api_secret:
             raise BrokerError("BitfinexBroker requires api_key and api_secret")
-        nonce = str(int(time.time() * 10_000))
+        now_us = int(time.time() * 1_000_000)
+        nonce_int = max(self._last_nonce + 1, now_us)
+        self._last_nonce = nonce_int
+        nonce = str(nonce_int)
         payload = f"/api/{path}{nonce}{body_str}".encode()
         sig = hmac.new(self.api_secret.encode("utf-8"), payload, hashlib.sha384).hexdigest()
         return {
@@ -108,7 +122,50 @@ class BitfinexBroker:
             last=last,
         )
 
-    def get_portfolio(self, instrument: Instrument, quote: Quote | None = None) -> PortfolioState:
+    def get_quotes(self, instruments: Sequence[Instrument]) -> dict[str, Quote]:
+        """Batch-fetch live quotes for multiple instruments in a single Bitfinex API call."""
+        if not instruments:
+            return {}
+        sym_to_inst = {self._exchange_symbol(inst): inst for inst in instruments}
+        symbols_param = ",".join(sym_to_inst.keys())
+        url = f"{self.pub_url}/v2/tickers"
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                resp = client.get(url, params={"symbols": symbols_param})
+        except httpx.HTTPError as exc:
+            raise BrokerError(f"Bitfinex batch tickers request failed: {exc}") from exc
+        if resp.status_code != 200:
+            raise BrokerError(f"Bitfinex batch tickers HTTP {resp.status_code}: {resp.text[:200]}")
+        data = resp.json()
+        if not isinstance(data, list):
+            raise BrokerError(f"Unexpected Bitfinex batch tickers payload: {data}")
+        now_utc = datetime.now(UTC)
+        out: dict[str, Quote] = {}
+        for row in data:
+            # [SYMBOL, BID, BID_SIZE, ASK, ASK_SIZE, DAILY_CHANGE, DAILY_CHANGE_PERC, LAST_PRICE, ...]
+            if not isinstance(row, list) or len(row) < 8:
+                continue
+            sym = str(row[0])
+            inst = sym_to_inst.get(sym)
+            if inst is None:
+                continue
+            bid = float(row[1])
+            ask = float(row[3])
+            last = float(row[7])
+            out[inst.id] = Quote(
+                instrument_id=inst.id,
+                timestamp=now_utc,
+                bid=bid if bid > 0 else last,
+                ask=ask if ask > 0 else last,
+                last=last,
+            )
+        # Fallback for any instrument missing from batch response
+        for inst in instruments:
+            if inst.id not in out:
+                out[inst.id] = self.get_quote(inst)
+        return out
+
+    def _fetch_exchange_wallets(self) -> dict[str, float]:
         path = "v2/auth/r/wallets"
         body_str = json.dumps({})
         headers = self._auth_headers(path, body_str)
@@ -121,11 +178,7 @@ class BitfinexBroker:
             raise BrokerError(f"Bitfinex wallets HTTP {resp.status_code}: {resp.text[:200]}")
 
         wallets = resp.json()
-        base_code = self._wallet_currency(instrument.base)
-        quote_code = self._wallet_currency(instrument.quote_currency)
-
-        base_bal = 0.0
-        quote_bal = 0.0
+        balances: dict[str, float] = {}
         for w in wallets:
             if not isinstance(w, list) or len(w) < 3:
                 continue
@@ -133,24 +186,50 @@ class BitfinexBroker:
                 continue
             curr = str(w[1]).upper()
             avail = float(w[4]) if (len(w) > 4 and w[4] is not None) else float(w[2])
-            if curr == base_code:
-                base_bal = max(0.0, avail)
-            elif curr == quote_code:
-                quote_bal = max(0.0, avail)
+            balances[curr] = max(0.0, avail)
+        return balances
 
-        q = quote or self.get_quote(instrument)
+    def get_portfolio(self, instrument: Instrument, quote: Quote | None = None) -> PortfolioState:
+        quotes = {instrument.id: quote} if quote is not None else None
+        return self.get_multi_portfolio([instrument], quotes=quotes)
+
+    def get_multi_portfolio(
+        self,
+        instruments: Sequence[Instrument],
+        quotes: dict[str, Quote] | None = None,
+    ) -> PortfolioState:
+        """Query Bitfinex exchange wallet once and mark every basket asset + cash to market."""
+        if not instruments:
+            raise BrokerError("get_multi_portfolio requires at least one instrument")
+        balances = self._fetch_exchange_wallets()
+        quote_currency = instruments[0].quote_currency
+        quote_code = self._wallet_currency(quote_currency)
+        quote_bal = balances.get(quote_code, 0.0)
+
+        resolved_quotes: dict[str, Quote] = dict(quotes or {})
+        missing = [inst for inst in instruments if inst.id not in resolved_quotes]
+        if missing:
+            resolved_quotes.update(self.get_quotes(missing))
+
         positions: dict[str, Position] = {}
-        if base_bal > 0:
-            positions[instrument.id] = Position(
-                instrument_id=instrument.id,
-                quantity=base_bal,
-                avg_entry_price=q.last,
-                market_price=q.last,
-            )
-        equity = quote_bal + base_bal * q.last
+        pos_value = 0.0
+        for inst in instruments:
+            base_code = self._wallet_currency(inst.base)
+            base_bal = balances.get(base_code, 0.0)
+            q = resolved_quotes[inst.id]
+            if base_bal > 0:
+                positions[inst.id] = Position(
+                    instrument_id=inst.id,
+                    quantity=base_bal,
+                    avg_entry_price=q.last,
+                    market_price=q.last,
+                )
+                pos_value += base_bal * q.last
+
+        equity = quote_bal + pos_value
         return PortfolioState(
             timestamp=datetime.now(UTC),
-            quote_currency=instrument.quote_currency,
+            quote_currency=quote_currency,
             cash=quote_bal,
             positions=positions,
             equity=equity,

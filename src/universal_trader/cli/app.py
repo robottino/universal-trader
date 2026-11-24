@@ -42,10 +42,19 @@ from universal_trader.engine.factory import (
     resolve_db_path,
 )
 from universal_trader.engine.forecast_cache import ForecastCache
+from universal_trader.engine.portfolio import (
+    PortfolioAllocator,
+    PortfolioBacktestRunner,
+    PortfolioStepRunner,
+)
 from universal_trader.engine.runner import TradingStepRunner
 from universal_trader.engine.walkforward import WalkForwardEngine
 from universal_trader.forecasters.device import DeviceManager
-from universal_trader.reporting.plots import plot_backtest_report, plot_fan_chart
+from universal_trader.reporting.plots import (
+    plot_backtest_report,
+    plot_fan_chart,
+    plot_portfolio_backtest_report,
+)
 from universal_trader.storage.sqlite_store import SQLiteStateStore
 
 app = typer.Typer(
@@ -179,7 +188,11 @@ def doctor(
         for cf in cfg_files:
             try:
                 parsed = load_config(cf)
-                ok_cfgs.append(f"{cf.name} ({parsed.instrument.id})")
+                if parsed.is_portfolio:
+                    basket_txt = "+".join(i.base for i in parsed.instruments)
+                    ok_cfgs.append(f"{cf.name} (Portfolio: {basket_txt})")
+                else:
+                    ok_cfgs.append(f"{cf.name} ({parsed.instrument.id})")
             except Exception as exc:
                 bad_cfgs.append(f"{cf.name}: {exc}")
         if bad_cfgs:
@@ -299,6 +312,7 @@ def backtest(
         [
             cfg.strategy.trend_slow_window,
             cfg.strategy.macro_ema_window or 0,
+            cfg.portfolio.warmup_bars or 0,
             *[sw for _, sw in cfg.strategy.ema_pairs],
         ]
     )
@@ -310,6 +324,87 @@ def backtest(
     warmup_start = start_dt - timedelta(
         seconds=delta.total_seconds() * warmup_bars_need * pad_factor
     )
+
+    if cfg.is_portfolio:
+        candles_by_id = {}
+        with console.status(
+            f"[cyan]Scaricamento candele multi-asset ({', '.join(i.id for i in cfg.instruments)})...[/cyan]"
+        ):
+            for inst in cfg.instruments:
+                candles_by_id[inst.id] = provider.fetch_ohlcv(
+                    instrument=inst,
+                    timeframe=cfg.data.timeframe,
+                    start=warmup_start,
+                    end=end_dt,
+                )
+
+        pf_runner = PortfolioBacktestRunner(config=cfg, calendar=calendar)
+        with _create_progress() as progress:
+            pf_stage_tasks: dict[str, TaskID] = {}
+
+            def _on_pf_progress(stage: str, completed: int, total: int) -> None:
+                if stage not in pf_stage_tasks:
+                    label = _STAGE_LABELS.get(stage, stage)
+                    pf_stage_tasks[stage] = progress.add_task(label, total=max(total, 1))
+                progress.update(pf_stage_tasks[stage], completed=completed, total=max(total, 1))
+
+            pf_result = pf_runner.run(
+                candles_by_id,
+                start=start_dt,
+                end=end_dt,
+                initial_cash=initial_cash,
+                progress_callback=_on_pf_progress,
+            )
+
+        m = pf_result.metrics
+        qccy = cfg.instruments[0].quote_currency
+        basket_str = " + ".join(i.base for i in cfg.instruments)
+        table = Table(title=f"Portfolio Backtest — {cfg.name} ({basket_str} {cfg.data.timeframe})")
+        table.add_column("Metric", style="bold cyan")
+        table.add_column("Value", justify="right")
+
+        table.add_row("Initial Equity", f"{m['initial_equity']:,.2f} {qccy}")
+        table.add_row("Final Equity", f"{m['final_equity']:,.2f} {qccy}")
+        table.add_row("Total ROI", f"{m['total_roi']:+.2%}")
+        table.add_row(f"Benchmark B&H ({pf_result.benchmark_id})", f"{m['buy_and_hold_roi']:+.2%}")
+        table.add_row("Outperformance vs Benchmark", f"{m['outperformance']:+.2%}")
+        table.add_row("CAGR", f"{m['cagr']:+.2%}")
+        table.add_row("Sharpe Ratio", f"{m['sharpe_ratio']:.2f}")
+        table.add_row("Sortino Ratio", f"{m['sortino_ratio']:.2f}")
+        table.add_row("Calmar Ratio", f"{m['calmar_ratio']:.2f}")
+        table.add_row("Max Drawdown", f"{m['max_drawdown']:.2%}")
+        table.add_row("Win Rate", f"{m['win_rate']:.1%} ({m['num_round_trips']} closed)")
+        table.add_row("Profit Factor", f"{m['profit_factor']:.2f}")
+        table.add_row("Trades / Turnover", f"{m['num_trades']} / {m['turnover']:.2f}x")
+        table.add_row(
+            "Total Costs (Fees + Slip)",
+            f"{m['total_costs']:,.2f} ({m['total_fees']:,.2f} + {m['total_slippage']:,.2f})",
+        )
+        for inst_id, bh_roi in pf_result.asset_bh_rois.items():
+            table.add_row(f"Buy & Hold ({inst_id})", f"{bh_roi:+.2%}")
+        if pf_result.yearly_returns:
+            yr_summary = " | ".join(f"{yr}: {ret:+.1%}" for yr, ret in sorted(pf_result.yearly_returns.items()))
+            table.add_row("Yearly Returns", yr_summary)
+        console.print(table)
+
+        out_dir = output_dir or paths.reports_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        eq_csv = out_dir / f"backtest_{cfg.name}_equity.csv"
+        pf_result.equity_df.to_csv(eq_csv)
+        console.print(f"[green]Portfolio Equity CSV saved:[/green] {eq_csv}")
+
+        if not no_plot:
+            chart_path = out_dir / f"backtest_{cfg.name}.png"
+            plot_portfolio_backtest_report(
+                equity_df=pf_result.equity_df,
+                metrics=pf_result.metrics,
+                instruments=pf_result.instruments,
+                benchmark_id=pf_result.benchmark_id,
+                config_name=cfg.name,
+                output_path=chart_path,
+            )
+            console.print(f"[green]Portfolio 3-panel chart saved:[/green] {chart_path}")
+        return
 
     with console.status("[cyan]Scaricamento candele e serie macro...[/cyan]"):
         candles = provider.fetch_ohlcv(
@@ -417,6 +512,7 @@ def walkforward(
         [
             cfg.strategy.trend_slow_window,
             cfg.strategy.macro_ema_window or 0,
+            cfg.portfolio.warmup_bars or 0,
             *[sw for _, sw in cfg.strategy.ema_pairs],
         ]
     )
@@ -428,6 +524,13 @@ def walkforward(
     warmup_start = start_dt - timedelta(
         seconds=delta.total_seconds() * warmup_bars_need * pad_factor
     )
+
+    if cfg.is_portfolio:
+        console.print(
+            "[yellow]Walk-forward grid optimization currently targets single-asset configs. "
+            "Use 'utrader backtest' for multi-asset portfolio validation.[/yellow]"
+        )
+        raise typer.Exit(code=2)
 
     with console.status("[cyan]Scaricamento candele e serie macro...[/cyan]"):
         candles = provider.fetch_ohlcv(
@@ -528,8 +631,6 @@ def trade(
             store = SQLiteStateStore(db_path)
             calendar = MarketCalendar(cfg.instrument.calendar)
             provider = build_data_provider(cfg, paths)
-            forecaster = build_forecaster(cfg)
-            strategy = build_strategy(cfg)
             risk_manager = build_risk_manager(cfg, calendar)
             broker = build_broker(
                 cfg,
@@ -538,6 +639,82 @@ def trade(
                 dry_run_override=dry_run,
             )
             notifier = build_notifier(cfg)
+
+            if cfg.is_portfolio:
+                candles_by_id = {
+                    inst.id: provider.fetch_ohlcv(
+                        instrument=inst,
+                        timeframe=cfg.data.timeframe,
+                        limit=cfg.data.lookback_bars,
+                    )
+                    for inst in cfg.instruments
+                }
+                allocator = PortfolioAllocator(cfg, calendar)
+                pf_step_runner = PortfolioStepRunner(
+                    config=cfg,
+                    allocator=allocator,
+                    risk_manager=risk_manager,
+                    broker=broker,
+                    store=store,
+                    notifier=notifier,
+                )
+                pf_outcome = pf_step_runner.run_step(
+                    candles_by_id=candles_by_id,
+                    now=datetime.now(UTC),
+                    check_staleness=True,
+                    enforce_idempotency=True,
+                    force=force,
+                    persist=True,
+                    notify=True,
+                )
+                if pf_outcome.skipped_idempotent:
+                    console.print(
+                        f"[yellow]Idempotent skip:[/yellow] candle {pf_outcome.candle_timestamp.isoformat()} "
+                        f"already processed for portfolio '{cfg.name}'."
+                    )
+                    return
+
+                mode_label = "DRY-RUN" if dry_run or cfg.mode.value == "dry_run" else cfg.mode.value.upper()
+                basket_str = " + ".join(i.base for i in cfg.instruments)
+                console.print(
+                    f"[bold]{cfg.name}[/bold] [{mode_label}] | Portfolio ({basket_str}) @ "
+                    f"{pf_outcome.candle_timestamp.isoformat()}"
+                )
+                alloc_table = Table(show_lines=False)
+                alloc_table.add_column("Asset", style="bold cyan")
+                alloc_table.add_column("Signal")
+                alloc_table.add_column("Vol (ann.)", justify="right")
+                alloc_table.add_column("Target", justify="right")
+                alloc_table.add_column("Before -> After", justify="right")
+                alloc_table.add_column("Action")
+                for inst in cfg.instruments:
+                    sig_txt = "[green]BULL[/green]" if pf_outcome.active_signals.get(inst.id) else "[dim]FLAT[/dim]"
+                    vol_txt = f"{pf_outcome.realized_vols.get(inst.id, 0.0):.1%}"
+                    tgt_txt = f"{pf_outcome.target_weights.get(inst.id, 0.0):.1%}"
+                    w_b = pf_outcome.current_weights_before.get(inst.id, 0.0)
+                    w_a = pf_outcome.current_weights_after.get(inst.id, 0.0)
+                    sub = pf_outcome.outcomes.get(inst.id)
+                    if sub and sub.fill is not None:
+                        act_txt = (
+                            f"[green]{sub.fill.side.value} {sub.fill.quantity:.6g} "
+                            f"@ {sub.fill.fill_price:,.2f} ({sub.fill.status.value})[/green]"
+                        )
+                    elif sub and sub.rejected_order is not None:
+                        act_txt = f"[yellow]REJECTED ({sub.rejected_order.guard_name}): {sub.rejected_order.reason}[/yellow]"
+                    else:
+                        act_txt = "HOLD"
+                    alloc_table.add_row(inst.id, sig_txt, vol_txt, tgt_txt, f"{w_b:.1%} -> {w_a:.1%}", act_txt)
+                console.print(alloc_table)
+                if pf_outcome.portfolio_after is not None:
+                    pf = pf_outcome.portfolio_after
+                    console.print(
+                        f"  Portfolio: Equity={pf.equity:,.2f} {pf.quote_currency} | "
+                        f"Cash={pf.cash:,.2f} | DD={pf.drawdown:.2%} | Halted={pf.halted}"
+                    )
+                return
+
+            forecaster = build_forecaster(cfg)
+            strategy = build_strategy(cfg)
             pipeline = build_feature_pipeline(cfg, calendar)
 
             candles = provider.fetch_ohlcv(

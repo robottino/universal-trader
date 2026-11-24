@@ -20,17 +20,18 @@ from universal_trader.core.models import (
 
 
 def compute_round_trip_pnls(fills: list[FillResult]) -> list[float]:
-    """Compute realized PnLs across closed round-trips from executed fills."""
+    """Compute realized PnLs across closed round-trips tracked per instrument_id."""
     executed = [f for f in fills if f.status == OrderStatus.FILLED and f.quantity > 0]
     pnls: list[float] = []
-    pos_qty = 0.0
-    avg_cost = 0.0
+    state: dict[str, tuple[float, float]] = {}
 
     for f in executed:
+        pos_qty, avg_cost = state.get(f.instrument_id, (0.0, 0.0))
         if f.side == OrderSide.BUY:
             total_cost = pos_qty * avg_cost + f.notional + f.fee
             pos_qty += f.quantity
             avg_cost = total_cost / pos_qty if pos_qty > 0 else 0.0
+            state[f.instrument_id] = (pos_qty, avg_cost)
         elif f.side == OrderSide.SELL and pos_qty > 0:
             sold = min(pos_qty, f.quantity)
             proceeds = (f.notional - f.fee) * (sold / f.quantity)
@@ -40,6 +41,7 @@ def compute_round_trip_pnls(fills: list[FillResult]) -> list[float]:
             if pos_qty < 1e-12:
                 pos_qty = 0.0
                 avg_cost = 0.0
+            state[f.instrument_id] = (pos_qty, avg_cost)
     return pnls
 
 

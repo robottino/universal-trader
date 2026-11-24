@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from universal_trader.core.config import FeeModelConfig
@@ -53,6 +54,7 @@ class LocalPaperBroker:
         self.timeframe = timeframe
         self.price_column = price_column
         self._last_quote: Quote | None = None
+        self._last_quotes: dict[str, Quote] = {}
 
         # Ensure account exists in SQLite
         self.store.load_or_init_paper_account(
@@ -64,6 +66,12 @@ class LocalPaperBroker:
     def set_quote(self, quote: Quote) -> None:
         """Supply latest market quote (e.g. from already-fetched OHLCV snapshot)."""
         self._last_quote = quote
+        self._last_quotes[quote.instrument_id] = quote
+
+    def set_quotes(self, quotes: dict[str, Quote]) -> None:
+        """Supply latest market quotes for multiple instruments simultaneously."""
+        for q in quotes.values():
+            self.set_quote(q)
 
     def _compute_fee(self, notional: float) -> float:
         if notional <= 0:
@@ -71,6 +79,8 @@ class LocalPaperBroker:
         return max(notional * self.fee_model.pct, self.fee_model.fixed_min)
 
     def get_quote(self, instrument: Instrument) -> Quote:
+        if instrument.id in self._last_quotes:
+            return self._last_quotes[instrument.id]
         if self._last_quote is not None and self._last_quote.instrument_id == instrument.id:
             return self._last_quote
         if self.data_provider is None:
@@ -89,23 +99,37 @@ class LocalPaperBroker:
             ask=last_price + half_spread,
             last=last_price,
         )
-        self._last_quote = quote
+        self.set_quote(quote)
         return quote
 
     def get_portfolio(self, instrument: Instrument, quote: Quote | None = None) -> PortfolioState:
+        quotes = {instrument.id: quote} if quote is not None else None
+        return self.get_multi_portfolio([instrument], quotes=quotes)
+
+    def get_multi_portfolio(
+        self,
+        instruments: Sequence[Instrument],
+        quotes: dict[str, Quote] | None = None,
+    ) -> PortfolioState:
         acct = self.store.load_or_init_paper_account(
             account_key=self.account_key,
             quote_currency=self.quote_currency,
             initial_cash=self.initial_cash,
         )
-        q = quote or self._last_quote
-        spot = q.last if q is not None else 0.0
-        ts = q.timestamp if q is not None else datetime.now(UTC)
+        quote_map: dict[str, Quote] = dict(self._last_quotes)
+        if quotes:
+            quote_map.update(quotes)
+            self.set_quotes(quotes)
+
+        ts = datetime.now(UTC)
+        if quote_map:
+            ts = max(q.timestamp for q in quote_map.values())
 
         pos_models: dict[str, Position] = {}
         pos_val = 0.0
         for inst_id, pdata in acct["positions"].items():
-            mkt_px = spot if (inst_id == instrument.id and spot > 0) else pdata["avg_entry_price"]
+            q_inst = quote_map.get(inst_id)
+            mkt_px = q_inst.last if (q_inst is not None and q_inst.last > 0) else pdata["avg_entry_price"]
             pos_models[inst_id] = Position(
                 instrument_id=inst_id,
                 quantity=pdata["quantity"],
@@ -200,7 +224,16 @@ class LocalPaperBroker:
             slippage = max(0.0, q.last - fill_price) * qty
 
         new_pos_val = sum(
-            p["quantity"] * (q.last if inst_id == instrument.id else p["avg_entry_price"])
+            p["quantity"]
+            * (
+                q.last
+                if inst_id == instrument.id
+                else (
+                    self._last_quotes[inst_id].last
+                    if inst_id in self._last_quotes and self._last_quotes[inst_id].last > 0
+                    else p["avg_entry_price"]
+                )
+            )
             for inst_id, p in positions.items()
         )
         new_equity = cash + new_pos_val

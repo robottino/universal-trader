@@ -26,6 +26,25 @@ class CsvParquetProvider:
     def __init__(self, file_path: str | Path) -> None:
         self.file_path = Path(file_path)
 
+    def _resolve_path(self, instrument: Instrument) -> Path:
+        explicit = instrument.provider_symbols.get("local")
+        if explicit:
+            p = Path(explicit)
+            if p.is_absolute():
+                return p
+            if self.file_path.is_dir():
+                return self.file_path / p
+            return self.file_path.parent / p
+        if self.file_path.is_dir():
+            sanitized = instrument.id.replace("/", "_").replace(":", "_")
+            for stem in (sanitized, instrument.base, instrument.id):
+                for ext in (".parquet", ".csv"):
+                    cand = self.file_path / f"{stem}{ext}"
+                    if cand.exists():
+                        return cand
+            return self.file_path / f"{sanitized}.parquet"
+        return self.file_path
+
     def fetch_ohlcv(
         self,
         instrument: Instrument,
@@ -34,14 +53,15 @@ class CsvParquetProvider:
         end: datetime | None = None,
         limit: int | None = None,
     ) -> pd.DataFrame:
-        if not self.file_path.exists():
-            raise DataProviderError(f"Local dataset file not found: {self.file_path}")
-        suffix = self.file_path.suffix.lower()
+        target_path = self._resolve_path(instrument)
+        if not target_path.exists():
+            raise DataProviderError(f"Local dataset file not found: {target_path}")
+        suffix = target_path.suffix.lower()
         try:
             if suffix == ".parquet":
-                raw = pd.read_parquet(self.file_path)
+                raw = pd.read_parquet(target_path)
             elif suffix == ".csv":
-                raw = pd.read_csv(self.file_path)
+                raw = pd.read_csv(target_path)
             else:
                 raise DataProviderError(
                     f"Unsupported local dataset extension '{suffix}'. Expected .csv or .parquet"
@@ -49,12 +69,12 @@ class CsvParquetProvider:
         except DataProviderError:
             raise
         except Exception as exc:
-            raise DataProviderError(f"Failed reading '{self.file_path}': {exc}") from exc
+            raise DataProviderError(f"Failed reading '{target_path}': {exc}") from exc
 
         normalized = normalize_ohlcv_dataframe(raw)
         result = slice_date_range(normalized, start=start, end=end, limit=limit)
         if result.empty:
             raise DataProviderError(
-                f"Local dataset '{self.file_path}' contains 0 bars in requested date range"
+                f"Local dataset '{target_path}' contains 0 bars in requested date range"
             )
         return result

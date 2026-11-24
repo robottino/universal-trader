@@ -16,6 +16,7 @@ _BUILTIN_PLUGIN_MODULES: tuple[str, ...] = (
     "universal_trader.brokers.simulated",
     "universal_trader.data.alpaca",
     "universal_trader.data.binance",
+    "universal_trader.data.bitfinex",
     "universal_trader.data.local",
     "universal_trader.data.yahoo",
     "universal_trader.forecasters.mock",

@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from universal_trader.core.models import (
+    PortfolioStepOutcome,
     StepOutcome,
     ensure_utc,
 )
@@ -382,6 +383,190 @@ class SQLiteStateStore:
                         pf.cash,
                         pos_qty,
                         mkt_price,
+                        pf.equity,
+                        pf.high_water_mark,
+                        pf.drawdown,
+                        1 if pf.halted else 0,
+                    ),
+                )
+
+            return run_id
+
+    def has_processed_portfolio(
+        self,
+        config_name: str,
+        timeframe: str,
+        candle_timestamp: datetime,
+    ) -> bool:
+        return self.has_processed(config_name, "PORTFOLIO", timeframe, candle_timestamp)
+
+    def record_portfolio_step(self, outcome: PortfolioStepOutcome) -> int:
+        """Persist atomic multi-asset portfolio step: run key, per-asset orders/fills, and total equity snapshot."""
+        ts_str = self._iso_utc(outcome.candle_timestamp)
+        now_str = datetime.now(UTC).isoformat()
+
+        if outcome.error:
+            status = "ERROR"
+        elif outcome.fills:
+            statuses = ",".join(sorted({f.status.value for f in outcome.fills}))
+            status = f"FILLED:{statuses}({len(outcome.fills)})"
+        elif outcome.rejected_orders:
+            guards = ",".join(sorted({r.guard_name for r in outcome.rejected_orders}))
+            status = f"REJECTED:{guards}"
+        else:
+            status = "HOLD"
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO runs (config_name, instrument_id, timeframe, candle_timestamp, executed_at, status, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(config_name, instrument_id, timeframe, candle_timestamp)
+                DO UPDATE SET executed_at = excluded.executed_at, status = excluded.status, error = excluded.error
+                """,
+                (
+                    outcome.config_name,
+                    "PORTFOLIO",
+                    outcome.timeframe,
+                    ts_str,
+                    now_str,
+                    status,
+                    outcome.error,
+                ),
+            )
+            run_row = conn.execute(
+                """
+                SELECT id FROM runs
+                WHERE config_name = ? AND instrument_id = 'PORTFOLIO' AND timeframe = ? AND candle_timestamp = ?
+                """,
+                (outcome.config_name, outcome.timeframe, ts_str),
+            ).fetchone()
+            assert run_row is not None
+            run_id = int(run_row["id"])
+
+            for inst_id, sub in outcome.outcomes.items():
+                if sub.approved_order is not None:
+                    ao = sub.approved_order
+                    conn.execute(
+                        """
+                        INSERT INTO orders (
+                            run_id, config_name, instrument_id, timestamp, side, decision,
+                            quantity, estimated_price, estimated_notional, estimated_fee,
+                            guard_name, reason, halted
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            run_id,
+                            outcome.config_name,
+                            inst_id,
+                            self._iso_utc(ao.timestamp),
+                            ao.side.value,
+                            "APPROVED",
+                            ao.quantity,
+                            ao.estimated_price,
+                            ao.estimated_notional,
+                            ao.estimated_fee,
+                            None,
+                            ao.reason,
+                            0,
+                        ),
+                    )
+                elif sub.rejected_order is not None:
+                    ro = sub.rejected_order
+                    conn.execute(
+                        """
+                        INSERT INTO orders (
+                            run_id, config_name, instrument_id, timestamp, side, decision,
+                            quantity, estimated_price, estimated_notional, estimated_fee,
+                            guard_name, reason, halted
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            run_id,
+                            outcome.config_name,
+                            inst_id,
+                            self._iso_utc(ro.timestamp),
+                            ro.side.value,
+                            "REJECTED",
+                            0.0,
+                            None,
+                            None,
+                            None,
+                            ro.guard_name,
+                            ro.reason,
+                            1 if ro.halted else 0,
+                        ),
+                    )
+                elif sub.intent is not None:
+                    conn.execute(
+                        """
+                        INSERT INTO orders (
+                            run_id, config_name, instrument_id, timestamp, side, decision,
+                            quantity, estimated_price, estimated_notional, estimated_fee,
+                            guard_name, reason, halted
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            run_id,
+                            outcome.config_name,
+                            inst_id,
+                            self._iso_utc(sub.intent.timestamp),
+                            sub.intent.side.value,
+                            "HOLD",
+                            0.0,
+                            sub.intent.signal.current_price,
+                            0.0,
+                            0.0,
+                            None,
+                            sub.intent.reason,
+                            1 if (outcome.portfolio_after and outcome.portfolio_after.halted) else 0,
+                        ),
+                    )
+
+            for fl in outcome.fills:
+                conn.execute(
+                    """
+                    INSERT INTO fills (
+                        run_id, order_id, config_name, instrument_id, timestamp, side,
+                        quantity, fill_price, notional, fee, slippage, status, raw_response_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        fl.order_id,
+                        outcome.config_name,
+                        fl.instrument_id,
+                        self._iso_utc(fl.timestamp),
+                        fl.side.value,
+                        fl.quantity,
+                        fl.fill_price,
+                        fl.notional,
+                        fl.fee,
+                        fl.slippage,
+                        fl.status.value,
+                        json.dumps(fl.raw_response, default=str),
+                    ),
+                )
+
+            pf = outcome.portfolio_after or outcome.portfolio_before
+            if pf is not None:
+                invested_val = sum(p.market_value for p in pf.positions.values())
+                conn.execute(
+                    """
+                    INSERT INTO equity_snapshots (
+                        run_id, config_name, instrument_id, timestamp, quote_currency,
+                        cash, position_qty, market_price, equity, high_water_mark, drawdown, halted
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        outcome.config_name,
+                        "PORTFOLIO",
+                        self._iso_utc(pf.timestamp),
+                        pf.quote_currency,
+                        pf.cash,
+                        float(len(pf.positions)),
+                        invested_val,
                         pf.equity,
                         pf.high_water_mark,
                         pf.drawdown,

@@ -517,3 +517,31 @@ class StepOutcome(BaseModel):
     @classmethod
     def _utc_timestamp(cls, v: Any) -> datetime:
         return ensure_utc(v)
+
+
+class PortfolioStepOutcome(BaseModel):
+    """Full audit record of one atomic multi-asset PortfolioStepRunner cycle."""
+
+    model_config = ConfigDict(frozen=True)
+
+    config_name: str
+    timeframe: str
+    candle_timestamp: datetime
+    skipped_idempotent: bool = False
+    active_signals: dict[str, bool] = Field(default_factory=dict)
+    realized_vols: dict[str, float] = Field(default_factory=dict)
+    target_weights: dict[str, float] = Field(default_factory=dict)
+    current_weights_before: dict[str, float] = Field(default_factory=dict)
+    current_weights_after: dict[str, float] = Field(default_factory=dict)
+    rebalance_triggered: bool = False
+    outcomes: dict[str, StepOutcome] = Field(default_factory=dict)
+    fills: list[FillResult] = Field(default_factory=list)
+    rejected_orders: list[RejectedOrder] = Field(default_factory=list)
+    portfolio_before: PortfolioState | None = None
+    portfolio_after: PortfolioState | None = None
+    error: str | None = None
+
+    @field_validator("candle_timestamp", mode="before")
+    @classmethod
+    def _utc_timestamp(cls, v: Any) -> datetime:
+        return ensure_utc(v)

@@ -34,6 +34,10 @@ uv run utrader predict --config configs/nvda_usd_timestral_paper.yaml
 # Realistic bar-by-bar historical backtest (default open[t+1] execution)
 uv run utrader backtest --config configs/nvda_usd_timestral_paper.yaml --start 2025-01-01 --end 2026-06-01
 
+# Multi-asset Bitfinex portfolio (BTC + ETH + Gold XAUT, Inv-Vol Risk Parity, 0% fee)
+uv run utrader backtest --config configs/bitfinex_portfolio_btc_eth_gold.yaml --start 2021-01-01 --end 2026-11-22
+uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml --dry-run
+
 # Rolling/expanding Walk-Forward optimization with persistent disk forecast cache
 uv run utrader walkforward --config configs/walkforward_example.yaml --start 2025-01-01 --end 2025-06-01
 

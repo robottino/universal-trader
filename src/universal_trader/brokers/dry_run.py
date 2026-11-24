@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 
 from universal_trader.core.logging import get_logger
 from universal_trader.core.models import (
@@ -30,6 +31,19 @@ class DryRunBroker:
 
     def get_portfolio(self, instrument: Instrument, quote: Quote | None = None) -> PortfolioState:
         return self._inner.get_portfolio(instrument, quote=quote)
+
+    def get_multi_portfolio(
+        self,
+        instruments: Sequence[Instrument],
+        quotes: dict[str, Quote] | None = None,
+    ) -> PortfolioState:
+        fn = getattr(self._inner, "get_multi_portfolio", None)
+        if callable(fn):
+            res: PortfolioState = fn(instruments, quotes=quotes)
+            return res
+        first = instruments[0]
+        q0 = quotes.get(first.id) if quotes else None
+        return self._inner.get_portfolio(first, quote=q0)
 
     def submit_order(self, order: ApprovedOrder, instrument: Instrument) -> FillResult:
         """Never invokes self._inner.submit_order; returns a simulated DRY_RUN FillResult."""

@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 
 from universal_trader.core.logging import get_logger, register_secret
-from universal_trader.core.models import Instrument, StepOutcome
+from universal_trader.core.models import Instrument, PortfolioStepOutcome, StepOutcome
 from universal_trader.core.registry import register_notifier
 
 logger = get_logger(__name__)
@@ -27,6 +27,13 @@ class NoopNotifier:
         outcome: StepOutcome,
         instrument: Instrument,
         chart_path: Path | None = None,
+    ) -> None:
+        return None
+
+    def notify_portfolio_step(
+        self,
+        outcome: PortfolioStepOutcome,
+        instruments: list[Instrument],
     ) -> None:
         return None
 
@@ -159,6 +166,54 @@ class TelegramNotifier:
             self._send_photo(chart_path, msg)
         else:
             self._send_text(msg)
+
+    def format_portfolio_step_message(
+        self,
+        outcome: PortfolioStepOutcome,
+        instruments: list[Instrument],
+    ) -> str:
+        basket = " + ".join(i.base for i in instruments)
+        lines = [
+            f"*{outcome.config_name}* — `{basket}` ({outcome.timeframe})",
+            f"Candle UTC: `{outcome.candle_timestamp.strftime('%Y-%m-%d %H:%M')}`",
+        ]
+        if outcome.skipped_idempotent:
+            lines.append("Status: SKIPPED (idempotent duplicate candle)")
+            return "\n".join(lines)
+        if outcome.error:
+            lines.append(f"Status: ERROR — {outcome.error}")
+            return "\n".join(lines)
+
+        for inst in instruments:
+            sig_lbl = "BULL" if outcome.active_signals.get(inst.id) else "FLAT"
+            vol_v = outcome.realized_vols.get(inst.id, 0.0)
+            tgt_w = outcome.target_weights.get(inst.id, 0.0)
+            aft_w = outcome.current_weights_after.get(inst.id, 0.0)
+            lines.append(f"• `{inst.base}`: {sig_lbl} | vol `{vol_v:.0%}` | tgt `{tgt_w:.0%}` | cur `{aft_w:.0%}`")
+
+        for fl in outcome.fills:
+            lines.append(
+                f"Order: *{fl.side.value}* `{fl.quantity:.6g} {fl.instrument_id}` "
+                f"@ `{fl.fill_price:,.4f}` (`{fl.status.value}`, fee=`{fl.fee:.4f}`)"
+            )
+        for ro in outcome.rejected_orders:
+            prefix = "HALTED / " if ro.halted else ""
+            lines.append(f"Risk {prefix}REJECTED `{ro.instrument_id}` (`{ro.guard_name}`): {ro.reason}")
+
+        pf = outcome.portfolio_after or outcome.portfolio_before
+        if pf is not None:
+            lines.append(
+                f"Equity: `{pf.equity:,.2f} {pf.quote_currency}` | "
+                f"Cash: `{pf.cash:,.2f}` | DD: `{pf.drawdown:.2%}`"
+            )
+        return "\n".join(lines)
+
+    def notify_portfolio_step(
+        self,
+        outcome: PortfolioStepOutcome,
+        instruments: list[Instrument],
+    ) -> None:
+        self._send_text(self.format_portfolio_step_message(outcome, instruments))
 
     def notify_alert(
         self,

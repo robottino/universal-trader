@@ -241,12 +241,44 @@ class WalkForwardConfig(BaseModel):
         return self
 
 
+class PortfolioConfig(BaseModel):
+    """Multi-asset portfolio allocation & rebalancing parameters."""
+
+    allocation_method: str = "inverse_volatility"  # inverse_volatility | equal_weight
+    max_weight_per_asset: float = Field(default=0.60, gt=0.0, le=1.0)
+    max_total_exposure: float = Field(default=0.98, gt=0.0, le=1.0)
+    vol_lookback_bars: int = Field(default=720, ge=2)
+    vol_min_bars: int = Field(default=24, ge=2)
+    vol_floor: float = Field(default=0.10, gt=0.0)
+    rebalance_band: float = Field(default=0.12, ge=0.0, le=1.0)
+    entry_min_weight: float = Field(default=0.05, ge=0.0, le=1.0)
+    exit_weight_threshold: float = Field(default=0.01, ge=0.0, le=1.0)
+    min_trade_notional: float = Field(default=25.0, ge=0.0)
+    warmup_bars: int | None = Field(default=None, ge=0)
+    benchmark_instrument_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_portfolio(self) -> PortfolioConfig:
+        if self.allocation_method not in {"inverse_volatility", "equal_weight"}:
+            raise ValueError(
+                f"Unsupported portfolio.allocation_method '{self.allocation_method}'. "
+                "Must be 'inverse_volatility' or 'equal_weight'"
+            )
+        if self.vol_min_bars > self.vol_lookback_bars:
+            raise ValueError(
+                f"portfolio.vol_min_bars ({self.vol_min_bars}) exceeds vol_lookback_bars ({self.vol_lookback_bars})"
+            )
+        return self
+
+
 class AppConfig(BaseModel):
-    """Top-level validated configuration for a Universal Trader pipeline."""
+    """Top-level validated configuration for a single-asset or multi-asset Universal Trader pipeline."""
 
     name: str = Field(..., min_length=1)
     mode: TradingMode = TradingMode.PAPER
     instrument: Instrument
+    instruments: list[Instrument] = Field(default_factory=list)
+    portfolio: PortfolioConfig = Field(default_factory=PortfolioConfig)
     data: DataConfig = Field(default_factory=DataConfig)
     forecaster: ForecasterConfig = Field(default_factory=ForecasterConfig)
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
@@ -256,14 +288,62 @@ class AppConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     walkforward: WalkForwardConfig = Field(default_factory=WalkForwardConfig)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_instruments_input(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        has_single = out.get("instrument") is not None
+        raw_multi = out.get("instruments")
+        if not has_single and isinstance(raw_multi, list) and len(raw_multi) > 0:
+            out["instrument"] = raw_multi[0]
+        elif has_single and not (isinstance(raw_multi, list) and len(raw_multi) > 0):
+            out["instruments"] = [out["instrument"]]
+        return out
+
     @model_validator(mode="after")
     def _validate_cross_fields(self) -> AppConfig:
-        # Ensure lookback_bars >= context_len if both are set cleanly
+        if not self.instruments:
+            self.instruments = [self.instrument]
+        # Ensure unique instrument IDs
+        ids = [inst.id for inst in self.instruments]
+        if len(set(ids)) != len(ids):
+            raise ValueError(f"Duplicate instrument IDs in portfolio config: {ids}")
+        # Multi-asset portfolio requires a common quote currency for cash/equity accounting
+        quote_currencies = {inst.quote_currency.upper() for inst in self.instruments}
+        if len(quote_currencies) > 1:
+            raise ValueError(
+                f"All portfolio instruments must share one quote_currency, got {sorted(quote_currencies)}"
+            )
+        if (
+            self.portfolio.benchmark_instrument_id is not None
+            and self.portfolio.benchmark_instrument_id not in ids
+        ):
+            raise ValueError(
+                f"portfolio.benchmark_instrument_id '{self.portfolio.benchmark_instrument_id}' "
+                f"must match one of {ids}"
+            )
         if self.forecaster.type == "timestral" and self.forecaster.params.context_len > 32768:
             raise ValueError("Timestral max context length is 32768")
-        if self.instrument.asset_class in {AssetClass.EQUITY, AssetClass.ETF} and self.data.provider == "binance":
-            raise ValueError("BinanceDataProvider does not support equities/ETFs")
+        for inst in self.instruments:
+            if inst.asset_class in {AssetClass.EQUITY, AssetClass.ETF} and self.data.provider == "binance":
+                raise ValueError("BinanceDataProvider does not support equities/ETFs")
         return self
+
+    @property
+    def is_portfolio(self) -> bool:
+        """True when managing a multi-asset basket (>1 instruments)."""
+        return len(self.instruments) > 1
+
+    @property
+    def benchmark_instrument(self) -> Instrument:
+        """Primary benchmark instrument for portfolio comparisons."""
+        if self.portfolio.benchmark_instrument_id is not None:
+            for inst in self.instruments:
+                if inst.id == self.portfolio.benchmark_instrument_id:
+                    return inst
+        return self.instruments[0]
 
 
 def load_config(

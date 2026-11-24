@@ -180,3 +180,163 @@ def plot_backtest_report(
     fig.savefig(out_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return out_path
+
+
+_ASSET_COLOR_HINTS: dict[str, str] = {
+    "BTC": "#f59e0b",   # Bitcoin orange
+    "ETH": "#a855f7",   # Ethereum purple
+    "XAUT": "#eab308",  # Gold yellow
+    "PAXG": "#eab308",
+    "GOLD": "#eab308",
+    "SOL": "#14b8a6",   # Solana teal
+}
+_FALLBACK_PALETTE: tuple[str, ...] = (
+    "#fb7185",
+    "#34d399",
+    "#60a5fa",
+    "#f472b6",
+    "#c084fc",
+    "#fbbf24",
+)
+
+
+def _color_for_instrument(inst: Instrument, idx: int) -> str:
+    hint = _ASSET_COLOR_HINTS.get(inst.base.upper())
+    if hint is not None:
+        return hint
+    return _FALLBACK_PALETTE[idx % len(_FALLBACK_PALETTE)]
+
+
+def plot_portfolio_backtest_report(
+    equity_df: pd.DataFrame,
+    metrics: dict[str, Any],
+    instruments: list[Instrument],
+    benchmark_id: str,
+    config_name: str,
+    output_path: str | Path,
+) -> Path:
+    """Render 3-panel multi-asset portfolio chart: Equity + all per-asset B&H, Drawdown, Allocation stack."""
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Resample daily for crisp visual rendering on multi-year intraday series
+    plot_df = equity_df.resample("1D").last().dropna(how="all") if len(equity_df) > 4000 else equity_df.copy()
+    plot_df = plot_df.ffill().dropna(subset=["equity"])
+
+    ts = plot_df.index
+    eq = plot_df["equity"].to_numpy(dtype=np.float64)
+    dd_pct = (1.0 - eq / np.maximum.accumulate(eq)) * 100.0
+    bh_col = f"bh_{benchmark_id}" if f"bh_{benchmark_id}" in plot_df.columns else "buy_and_hold_equity"
+    bh_bench = plot_df[bh_col].to_numpy(dtype=np.float64)
+    bh_dd_pct = (1.0 - bh_bench / np.maximum.accumulate(bh_bench)) * 100.0
+
+    quote_ccy = instruments[0].quote_currency
+    initial_eq = float(metrics.get("initial_equity", eq[0] if len(eq) > 0 else 10000.0))
+    final_eq = float(metrics.get("final_equity", eq[-1] if len(eq) > 0 else initial_eq))
+    roi = float(metrics.get("total_roi", 0.0))
+    cagr = float(metrics.get("cagr", 0.0))
+    sharpe = float(metrics.get("sharpe_ratio", 0.0))
+    calmar = float(metrics.get("calmar_ratio", 0.0))
+    max_dd = float(metrics.get("max_drawdown", 0.0))
+    trades = int(metrics.get("num_trades", 0))
+
+    fig, (ax1, ax2, ax3) = plt.subplots(
+        3,
+        1,
+        figsize=(14, 10.5),
+        dpi=140,
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.5, 1.0, 1.0]},
+    )
+    fig.patch.set_facecolor("#0f172a")
+    for ax in (ax1, ax2, ax3):
+        ax.set_facecolor("#0f172a")
+        ax.tick_params(colors="#94a3b8")
+        ax.grid(True, linestyle="--", alpha=0.2, color="#64748b")
+        for spine in ax.spines.values():
+            spine.set_color("#334155")
+
+    # Panel 1: Portfolio equity + every individual asset Buy & Hold normalized from initial_eq
+    ax1.plot(
+        ts,
+        eq,
+        color="#38bdf8",
+        linewidth=2.4,
+        zorder=5,
+        label=f"Portfolio ({roi:+.1%}, {final_eq:,.0f} {quote_ccy})",
+    )
+    colors = [_color_for_instrument(inst, i) for i, inst in enumerate(instruments)]
+    for inst, col_hex in zip(instruments, colors, strict=True):
+        col_name = f"bh_{inst.id}"
+        if col_name not in plot_df.columns:
+            continue
+        series = plot_df[col_name].to_numpy(dtype=np.float64)
+        asset_roi = (series[-1] / series[0] - 1.0) if len(series) > 0 and series[0] > 0 else 0.0
+        ax1.plot(
+            ts,
+            series,
+            color=col_hex,
+            linewidth=1.35,
+            alpha=0.82,
+            linestyle="--",
+            label=f"{inst.base} Buy & Hold ({asset_roi:+.1%})",
+        )
+
+    basket_label = " + ".join(inst.base for inst in instruments)
+    ax1.set_title(
+        f"{config_name} ({basket_label})\n"
+        f"ROI: {roi:+.1%} | CAGR: {cagr:+.1%} | Sharpe: {sharpe:.2f} | "
+        f"Calmar: {calmar:.2f} | MaxDD: {max_dd:.1%} | Trades: {trades}",
+        color="#f8fafc",
+        fontsize=12,
+        fontweight="bold",
+        pad=10,
+    )
+    ax1.set_ylabel(f"Equity from {initial_eq:,.0f} ({quote_ccy})", color="#cbd5e1")
+    leg1 = ax1.legend(
+        loc="upper left",
+        ncol=2,
+        facecolor="#1e293b",
+        edgecolor="#334155",
+        labelcolor="#e2e8f0",
+    )
+    leg1.get_frame().set_alpha(0.92)
+
+    # Panel 2: Drawdown comparison
+    bench_base = next((i.base for i in instruments if i.id == benchmark_id), benchmark_id)
+    ax2.fill_between(ts, 0.0, -bh_dd_pct, color="#64748b", alpha=0.22, label=f"{bench_base} Buy & Hold DD")
+    ax2.fill_between(ts, 0.0, -dd_pct, color="#ef4444", alpha=0.45, label="Portfolio DD")
+    ax2.plot(ts, -dd_pct, color="#f87171", linewidth=1.1)
+    ax2.set_ylabel("Drawdown (%)", color="#cbd5e1")
+    leg2 = ax2.legend(loc="lower left", facecolor="#1e293b", edgecolor="#334155", labelcolor="#e2e8f0")
+    leg2.get_frame().set_alpha(0.9)
+
+    # Panel 3: Stacked allocation weights
+    stack_vals = [
+        (plot_df[f"w_{inst.id}"].to_numpy(dtype=np.float64) * 100.0)
+        if f"w_{inst.id}" in plot_df.columns
+        else np.zeros(len(ts), dtype=np.float64)
+        for inst in instruments
+    ]
+    stack_labels = [inst.base for inst in instruments]
+    ax3.stackplot(ts, *stack_vals, labels=stack_labels, colors=colors, alpha=0.84)
+    ax3.set_ylim(0, 102)
+    ax3.set_ylabel("Allocation (%)", color="#cbd5e1")
+    ax3.set_xlabel(f"Date (UTC) — empty space = Cash {quote_ccy}", color="#cbd5e1")
+    leg3 = ax3.legend(
+        loc="upper left",
+        ncol=len(instruments),
+        facecolor="#1e293b",
+        edgecolor="#334155",
+        labelcolor="#e2e8f0",
+    )
+    leg3.get_frame().set_alpha(0.9)
+
+    locator = mdates.AutoDateLocator()
+    ax3.xaxis.set_major_locator(locator)
+    ax3.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+
+    fig.tight_layout()
+    fig.savefig(out_path, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return out_path

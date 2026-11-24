@@ -1,0 +1,141 @@
+# Opzione 2 (Validata 2021–2026): Portafoglio Multi-Asset BTC + ETH + Oro (XAUT) su Bitfinex
+#
+# Strategia: EMA Trend 10d/30d (240h/720h, isteresi 1.5%) + Filtro Macro EMA 200d (4800h, isteresi 2.0%)
+# Allocazione: Active Inverse-Volatility Risk Parity (cap 60% per asset, max 98% investito, resto cash USD)
+# Commissioni: 0% trading fee Bitfinex Spot (solo spread + slippage)
+#
+# Utilizzo:
+#   # Backtest storico 6 anni con grafico a 3 pannelli (portafoglio + B&H di ogni asset + DD + allocazione):
+#   uv run utrader backtest --config configs/bitfinex_portfolio_btc_eth_gold.yaml --start 2021-01-01 --end 2026-11-22
+#
+#   # Simulazione a zero scritture su Bitfinex (legge solo prezzi/portafoglio):
+#   uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml --dry-run
+#
+#   # Paper trading reale su Bitfinex Paper (tTESTBTC:TESTUSD, tTESTETH:TESTUSD, tTESTXAUT:TESTUSD):
+#   # Imposta BITFINEX_PAPER_API_KEY e BITFINEX_PAPER_API_SECRET nel file .env, poi:
+#   uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml
+#
+#   # Per passare a LIVE su Bitfinex (tBTCUSD, tETHUSD, tXAUT:USD):
+#   # Imposta mode: live, broker.paper: false, e usa BITFINEX_LIVE_API_KEY / BITFINEX_LIVE_API_SECRET.
+
+name: "bitfinex_portfolio_btc_eth_gold"
+mode: paper # dry_run | paper | live
+
+instruments:
+  - id: "BTC/USD"
+    asset_class: crypto
+    base: BTC
+    quote_currency: USD
+    calendar: "24/7"
+    fractional: true
+    min_qty: 0.00004   # verificato via Bitfinex pub:info:pair (BTCUSD)
+    qty_step: 0.00001
+    min_notional: 10.0
+    provider_symbols:
+      binance: "BTCUSDT"
+      bitfinex: "tBTCUSD"
+      bitfinex_paper: "tTESTBTC:TESTUSD"
+      yahoo: "BTC-USD"
+
+  - id: "ETH/USD"
+    asset_class: crypto
+    base: ETH
+    quote_currency: USD
+    calendar: "24/7"
+    fractional: true
+    min_qty: 0.0008    # verificato via Bitfinex pub:info:pair (ETHUSD)
+    qty_step: 0.0001
+    min_notional: 10.0
+    provider_symbols:
+      binance: "ETHUSDT"
+      bitfinex: "tETHUSD"
+      bitfinex_paper: "tTESTETH:TESTUSD"
+      yahoo: "ETH-USD"
+
+  - id: "XAUT/USD"
+    asset_class: crypto
+    base: XAUT
+    quote_currency: USD
+    calendar: "24/7"
+    fractional: true
+    min_qty: 0.002     # verificato via Bitfinex pub:info:pair (XAUT:USD)
+    qty_step: 0.0001
+    min_notional: 10.0
+    provider_symbols:
+      binance: "PAXGUSDT"          # proxy storico 1:1 oro fisico con serie 1h completa dal 2020
+      bitfinex: "tXAUT:USD"        # Tether Gold live su Bitfinex
+      bitfinex_paper: "tTESTXAUT:TESTUSD"
+      yahoo: "GC=F"
+
+portfolio:
+  allocation_method: inverse_volatility
+  max_weight_per_asset: 0.60       # Opzione 2: cap 60% per singolo asset
+  max_total_exposure: 0.98         # 2% cuscinetto cash USD
+  vol_lookback_bars: 720           # volatilita' realizzata 30 giorni (30 * 24h)
+  vol_min_bars: 24
+  vol_floor: 0.10                  # pavimento volatilita' annualizzata 10%
+  rebalance_band: 0.12             # ribilancia solo se scostamento >= 12% (riduce turnover)
+  entry_min_weight: 0.05
+  exit_weight_threshold: 0.01
+  min_trade_notional: 25.0
+  warmup_bars: 2880                # 120 giorni di warmup per convergenza EMA 200d
+  benchmark_instrument_id: "BTC/USD"
+
+data:
+  provider: binance                # oppure "bitfinex" per candele 100% dirette da Bitfinex
+  timeframe: "1h"
+  lookback_bars: 7200              # 300 giorni di storia 1h (convergenza piena EMA 200d in live)
+  price_column: close
+  use_cache: true
+  features:
+    past_only: []
+    known_future: []
+
+forecaster:
+  type: noop
+  params:
+    model_id: "noop/portfolio_ema_inv_vol"
+    context_len: 720
+    horizon: 1
+
+strategy:
+  # Regola identica su tutti gli asset (zero ritocchi per-asset -> anti-overfitting)
+  type: ema_trend
+  trend_fast_window: 240           # EMA 10 giorni (240h)
+  trend_slow_window: 720           # EMA 30 giorni (720h)
+  trend_hysteresis_pct: 0.015      # banda isteresi +/- 1.5%
+  macro_ema_window: 4800           # Filtro macro EMA 200 giorni (4800h)
+  macro_hysteresis_pct: 0.02       # isteresi macro +/- 2.0%
+  macro_bear_weight: 0.0
+  target_weight_bull: 0.98
+  rebalance_band: 0.12
+
+risk:
+  enforce_market_hours: false
+  max_data_age_minutes: 90
+  max_exposure_pct: 0.98
+  max_drawdown_pct: 0.40           # circuit breaker sopra il MaxDD storico del 29.1%
+  cash_reserve_pct: 0.005          # 0.5% riserva sicurezza su market order
+  fee_model:
+    pct: 0.0                       # Bitfinex 0% maker/taker fee
+    fixed_min: 0.0
+  slippage_bps: 5.0
+  spread_bps: 2.0
+  enable_fee_guard: false
+
+broker:
+  type: bitfinex                   # usa "local_paper" per simulare localmente senza API key Bitfinex
+  paper: true                      # true = Paper (tTEST...), false = Live (tBTCUSD, tETHUSD, tXAUT:USD)
+  initial_cash: 25000.0
+  execution_price: next_open
+  api_key: "${BITFINEX_PAPER_API_KEY}"
+  api_secret: "${BITFINEX_PAPER_API_SECRET}"
+
+notifier:
+  type: telegram
+  enabled: false                   # imposta true con TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID in .env
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  chat_id: "${TELEGRAM_CHAT_ID}"
+
+storage:
+  db_path: "state/bitfinex_portfolio.db"
