@@ -1,0 +1,89 @@
+name: "btc_eur_1h_24h"
+mode: dry_run # dry_run | paper | live
+
+instrument:
+  id: "BTC/EUR"
+  asset_class: crypto
+  base: BTC
+  quote_currency: EUR
+  calendar: "24/7"
+  fractional: true
+  min_qty: 0.0001
+  qty_step: 0.00001
+  min_notional: 5.0
+  provider_symbols:
+    binance: "BTCEUR"
+    bitfinex: "tTESTBTC:TESTEUR"
+    yahoo: "BTC-EUR"
+
+data:
+  provider: binance
+  timeframe: "1h"
+  lookback_bars: 1024
+  price_column: close
+  use_cache: true
+  features:
+    past_only:
+      - "volume"
+      - "log_return_1"
+      - "realized_vol_24"
+      - "rolling_obi_24"
+      - "vix"
+      - "sp500"
+      - "dxy"
+    known_future:
+      - "hour_sin"
+      - "hour_cos"
+      - "dow_sin"
+      - "dow_cos"
+
+forecaster:
+  type: timestral
+  params:
+    # Usa "mistralai/Timestral-28M" per backtest/walkforward veloci;
+    # "mistralai/Timestral-123M" o "209M" per predict/trade orario.
+    model_id: "mistralai/Timestral-123M"
+    context_len: 512
+    horizon: 24
+    device: "auto" # auto | cuda | mps | cpu
+    batch_size: 32
+
+strategy:
+  type: tail_risk_kelly
+  signal: median_last
+  theta_buy: 0.01
+  theta_sell: -0.01
+  k_risk: 0.5
+  tail_quantile: 0.05
+
+risk:
+  enforce_market_hours: false
+  max_data_age_minutes: 90
+  max_exposure_pct: 1.0
+  max_drawdown_pct: 0.15
+  fee_model:
+    pct: 0.001
+    fixed_min: 0.0
+  slippage_bps: 5.0
+
+broker:
+  type: local_paper # sostituibile con "bitfinex" quando vuoi usare il conto exchange
+  initial_cash: 10000.0
+
+notifier:
+  type: noop
+  enabled: false
+
+walkforward:
+  mode: rolling
+  train_bars: 360
+  test_bars: 120
+  step_bars: 120
+  metric: sharpe_ratio
+  min_trades: 2
+  initial_cash: 10000.0
+  param_grid:
+    strategy.type: ["tail_risk_kelly", "dynamic_kelly", "volatility_adjusted"]
+    strategy.theta_buy: [0.005, 0.01, 0.015]
+    strategy.theta_sell: [-0.005, -0.01]
+    strategy.k_risk: [0.25, 0.5]

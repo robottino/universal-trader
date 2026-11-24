@@ -1,0 +1,74 @@
+name: "btc_eur_1h_ema_10d_30d"
+mode: dry_run # dry_run | paper | live
+
+instrument:
+  id: "BTC/EUR"
+  asset_class: crypto
+  base: BTC
+  quote_currency: EUR
+  calendar: "24/7"
+  fractional: true
+  min_qty: 0.0001
+  qty_step: 0.00001
+  min_notional: 5.0
+  provider_symbols:
+    binance: "BTCEUR"
+    bitfinex: "tTESTBTC:TESTEUR"
+    yahoo: "BTC-EUR"
+
+data:
+  provider: binance
+  timeframe: "1h"
+  lookback_bars: 2200 # ~92 giorni (ampio margine per convergenza EMA 30d = 720 barre)
+  price_column: close
+  use_cache: true
+  features:
+    past_only: []
+    known_future: []
+
+forecaster:
+  type: noop
+  params:
+    model_id: "noop/ema_trend"
+    context_len: 720
+    horizon: 1
+
+strategy:
+  # Profilo vincitore sui 6 anni (2021-2026): 1h EMA 10d (240h) / 30d (720h) + isteresi 1.5%
+  type: ema_trend
+  trend_fast_window: 240  # 10 giorni × 24h
+  trend_slow_window: 720  # 30 giorni × 24h
+  trend_hysteresis_pct: 0.015
+  target_weight_bull: 0.98
+  rebalance_band: 0.15
+
+risk:
+  enforce_market_hours: false
+  max_data_age_minutes: 90
+  max_exposure_pct: 1.0
+  max_drawdown_pct: 0.55 # compatibile con cicli BTC storici (2022 max DD ~49%)
+  fee_model:
+    pct: 0.001
+    fixed_min: 0.0
+  slippage_bps: 5.0
+  enable_fee_guard: false
+
+broker:
+  type: local_paper # sostituibile con "bitfinex" quando vuoi usare il conto exchange
+  initial_cash: 10000.0
+
+notifier:
+  type: noop
+  enabled: false
+
+walkforward:
+  mode: rolling
+  train_bars: 4320 # 180 giorni
+  test_bars: 2160  # 90 giorni
+  step_bars: 2160
+  metric: sharpe_ratio
+  min_trades: 2
+  initial_cash: 10000.0
+  param_grid:
+    strategy.trend_fast_window: [180, 240, 360]
+    strategy.trend_slow_window: [600, 720, 960]

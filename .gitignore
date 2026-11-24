@@ -1,0 +1,35 @@
+# Secrets & environment
+.env
+.env.*
+!.env.example
+*.key
+*.secret
+*.pem
+
+# Virtual environments & caches
+.venv/
+.uv_cache/
+.hf_cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Runtime data, model caches, state & reports
+data_cache/
+forecast_cache/
+state/*.db
+state/*.db-shm
+state/*.db-wal
+state/*.lock
+reports/
+
+# Packaging & IDE
+build/
+dist/
+*.egg-info/
+.DS_Store
+.idea/
+.vscode/

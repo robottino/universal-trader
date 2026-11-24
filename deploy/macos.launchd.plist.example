@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- macOS launchd agent example: copy to ~/Library/LaunchAgents/com.universal-trader.btc.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.universal-trader.btc</string>
+    <key>WorkingDirectory</key>
+    <string>/REPLACE/WITH/PATH/TO/universal-trader</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>utrader</string>
+        <string>trade</string>
+        <string>--config</string>
+        <string>configs/btc_eur_timestral_paper.yaml</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>2</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/REPLACE/WITH/PATH/TO/universal-trader/state/launchd_btc.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/REPLACE/WITH/PATH/TO/universal-trader/state/launchd_btc.err.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

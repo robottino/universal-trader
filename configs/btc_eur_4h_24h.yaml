@@ -1,0 +1,86 @@
+name: "btc_eur_4h_24h"
+mode: dry_run # dry_run | paper | live
+
+instrument:
+  id: "BTC/EUR"
+  asset_class: crypto
+  base: BTC
+  quote_currency: EUR
+  calendar: "24/7"
+  fractional: true
+  min_qty: 0.0001
+  qty_step: 0.00001
+  min_notional: 5.0
+  provider_symbols:
+    binance: "BTCEUR"
+    bitfinex: "tTESTBTC:TESTEUR"
+    yahoo: "BTC-EUR"
+
+data:
+  provider: binance
+  timeframe: "4h"
+  lookback_bars: 768
+  price_column: close
+  use_cache: true
+  features:
+    # past_only vuoto -> calibrazione Timestral 80.1% / 89.9% su BTC/EUR 4h
+    past_only: []
+    known_future:
+      - "hour_sin"
+      - "hour_cos"
+      - "dow_sin"
+      - "dow_cos"
+
+forecaster:
+  type: timestral
+  params:
+    model_id: "mistralai/Timestral-123M"
+    context_len: 512
+    horizon: 6 # 6 barre × 4h = 24H
+    device: "auto" # auto | cuda | mps | cpu
+    batch_size: 32
+
+strategy:
+  # Strategia ibrida: trend causale (EMA) per direzione + 21 quantili Timestral per sizing/rischio
+  type: trend_quantile_risk
+  trend_fast_window: 24   # ~4 giorni
+  trend_slow_window: 72   # ~12 giorni
+  target_vol: 0.06
+  tail_quantile: 0.05
+  tail_risk_budget: 0.04
+  k_risk: 1.0
+  rebalance_band: 0.15
+
+risk:
+  enforce_market_hours: false
+  max_data_age_minutes: 300
+  max_exposure_pct: 0.85
+  max_drawdown_pct: 0.25
+  fee_model:
+    pct: 0.001
+    fixed_min: 0.0
+  slippage_bps: 5.0
+  enable_fee_guard: false # ingresso guidato dal trend, non da q50 puntuale
+  enable_quantile_stop_loss: true
+  trailing_stop_pct: 0.07
+
+broker:
+  type: local_paper
+  initial_cash: 10000.0
+
+notifier:
+  type: noop
+  enabled: false
+
+walkforward:
+  mode: rolling
+  train_bars: 240 # 40 giorni
+  test_bars: 90   # 15 giorni
+  step_bars: 90
+  metric: sharpe_ratio
+  min_trades: 2
+  initial_cash: 10000.0
+  param_grid:
+    strategy.trend_fast_window: [18, 24, 36]
+    strategy.trend_slow_window: [60, 72, 96]
+    strategy.tail_risk_budget: [0.03, 0.05]

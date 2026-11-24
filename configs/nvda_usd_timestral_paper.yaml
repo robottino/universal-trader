@@ -1,0 +1,51 @@
+name: "nvda_1d_timestral"
+mode: paper
+
+instrument:
+  id: "NVDA"
+  asset_class: equity
+  base: NVDA
+  quote_currency: USD
+  calendar: "XNAS"
+  fractional: false
+  min_qty: 1
+  qty_step: 1
+  min_notional: 10.0
+
+data:
+  provider: yahoo
+  timeframe: "1d"
+  lookback_bars: 512
+  price_column: adj_close
+  features:
+    past_only: ["volume", "log_return_1", "vix", "sp500", "nasdaq", "bond10y"]
+    known_future: ["dow_sin", "dow_cos", "month_sin", "month_cos"]
+
+forecaster:
+  type: timestral
+  params:
+    model_id: "mistralai/Timestral-209M"
+    context_len: 256
+    horizon: 5
+    device: "auto"
+
+strategy:
+  type: volatility_adjusted
+  signal: median_mean
+  theta_buy: 0.015
+  theta_sell: -0.01
+  k_risk: 0.5
+
+risk:
+  enforce_market_hours: true
+  max_data_age_minutes: 1500
+  max_exposure_pct: 0.5
+  max_drawdown_pct: 0.12
+  fee_model:
+    pct: 0.0
+    fixed_min: 1.0
+  slippage_bps: 3.0
+
+broker:
+  type: local_paper # sostituibile con "alpaca" senza cambiare codice
+  initial_cash: 10000.0

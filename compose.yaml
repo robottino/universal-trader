@@ -1,0 +1,83 @@
+# Universal Trader — OCI Compose specification
+# Compatible with both `podman compose` and `docker compose`.
+#
+# Linux SELinux note (Fedora/RHEL with Podman):
+#   Append `:Z` to bind mounts if SELinux enforces labels, and pass `--userns=keep-id`
+#   in standalone `podman run` invocations to map your host UID cleanly.
+
+x-common-volumes: &common-volumes
+  - ./configs:/app/configs:ro
+  - hf_cache:/app/.hf_cache
+  - ./data_cache:/app/data_cache
+  - ./forecast_cache:/app/forecast_cache
+  - ./state:/app/state
+  - ./reports:/app/reports
+
+services:
+  trader:
+    image: universal-trader:cpu
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: cpu
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      UTRADER_DEVICE: cpu
+      HF_HOME: /app/.hf_cache
+    volumes: *common-volumes
+    restart: "no"
+
+  trader-cuda:
+    image: universal-trader:cuda
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: cuda
+    profiles: ["cuda"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      UTRADER_DEVICE: cuda
+      HF_HOME: /app/.hf_cache
+    volumes: *common-volumes
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: "no"
+
+  scheduler:
+    image: universal-trader:cpu
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: cpu
+    profiles: ["scheduler"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      UTRADER_DEVICE: cpu
+      HF_HOME: /app/.hf_cache
+      UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/btc_eur_timestral_paper.yaml}
+      UTRADER_INTERVAL_SECONDS: ${UTRADER_INTERVAL_SECONDS:-3600}
+      UTRADER_TRADE_ARGS: ${UTRADER_TRADE_ARGS:---dry-run}
+    volumes: *common-volumes
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          echo "[scheduler] Running utrader trade --config $${UTRADER_CONFIG} $${UTRADER_TRADE_ARGS}"
+          utrader trade --config "$${UTRADER_CONFIG}" $${UTRADER_TRADE_ARGS} || true
+          sleep "$${UTRADER_INTERVAL_SECONDS}"
+        done
+    restart: unless-stopped
+
+volumes:
+  hf_cache:

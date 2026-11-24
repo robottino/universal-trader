@@ -1,0 +1,63 @@
+name: "nvda_hybrid_1d"
+mode: dry_run
+
+instrument:
+  id: "NVDA"
+  asset_class: equity
+  base: NVDA
+  quote_currency: USD
+  calendar: "XNAS"
+  fractional: false
+  min_qty: 1
+  qty_step: 1
+  min_notional: 10.0
+
+data:
+  provider: yahoo
+  timeframe: "1d"
+  lookback_bars: 512
+  price_column: adj_close
+  use_cache: true
+  features:
+    past_only: []
+    known_future:
+      - "dow_sin"
+      - "dow_cos"
+      - "month_sin"
+      - "month_cos"
+
+forecaster:
+  type: timestral
+  params:
+    model_id: "mistralai/Timestral-123M"
+    context_len: 256
+    horizon: 5 # 5 sedute (~1 settimana)
+    device: "auto"
+    batch_size: 32
+
+strategy:
+  type: trend_quantile_risk
+  trend_fast_window: 10
+  trend_slow_window: 30
+  target_vol: 0.08
+  tail_quantile: 0.05
+  tail_risk_budget: 0.05
+  k_risk: 1.0
+  rebalance_band: 0.15
+
+risk:
+  enforce_market_hours: false
+  max_data_age_minutes: 1500
+  max_exposure_pct: 0.9
+  max_drawdown_pct: 0.20
+  fee_model:
+    pct: 0.0
+    fixed_min: 1.0
+  slippage_bps: 3.0
+  enable_fee_guard: false
+  enable_quantile_stop_loss: true
+  trailing_stop_pct: 0.10
+
+broker:
+  type: local_paper
+  initial_cash: 10000.0

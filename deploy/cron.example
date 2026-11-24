@@ -1,0 +1,8 @@
+# Example cron entry (Linux / macOS) with flock anti-overlap protection
+# Note: `utrader trade` ALSO acquires an internal advisory file lock in `state/<config_name>.lock`.
+#
+# Run BTC/EUR 1h strategy at minute 2 of every hour:
+2 * * * * cd /path/to/universal-trader && /usr/bin/env uv run utrader trade --config configs/btc_eur_timestral_paper.yaml >> state/cron_btc.log 2>&1
+
+# Run NVDA 1d strategy Monday–Friday at 20:50 UTC (10 minutes before US close):
+50 20 * * 1-5 cd /path/to/universal-trader && /usr/bin/env uv run utrader trade --config configs/nvda_usd_timestral_paper.yaml >> state/cron_nvda.log 2>&1
