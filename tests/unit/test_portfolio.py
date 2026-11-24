@@ -277,3 +277,74 @@ def test_compute_round_trip_pnls_tracks_multiple_instruments_independently() -> 
     ]
     pnls = compute_round_trip_pnls(fills)
     assert pnls == pytest.approx([20.0, -10.0])
+
+
+def test_telegram_notifier_event_filtering_html_escape_and_cli_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    from typer.testing import CliRunner
+
+    from universal_trader.cli.app import app
+    from universal_trader.core.models import PortfolioStepOutcome
+    from universal_trader.reporting.telegram import TelegramNotifier
+
+    insts = _make_instruments()
+    notifier = TelegramNotifier(
+        bot_token="123456:fake-token",
+        chat_id="99999",
+        enabled=True,
+        notify_on="events",
+        daily_summary_hour_utc=8,
+    )
+
+    # 1. Quiet HOLD at non-heartbeat hour -> suppressed
+    quiet_14 = PortfolioStepOutcome(
+        config_name="bitfinex_portfolio_btc_eth_gold",
+        timeframe="1h",
+        candle_timestamp=datetime(2026, 6, 1, 14, 0, tzinfo=UTC),
+        active_signals={"BTC/USD": False, "ETH/USD": False, "XAUT/USD": True},
+        realized_vols={"BTC/USD": 0.5, "ETH/USD": 0.7, "XAUT/USD": 0.15},
+        target_weights={"BTC/USD": 0.0, "ETH/USD": 0.0, "XAUT/USD": 0.60},
+        current_weights_before={"BTC/USD": 0.0, "ETH/USD": 0.0, "XAUT/USD": 0.60},
+        current_weights_after={"BTC/USD": 0.0, "ETH/USD": 0.0, "XAUT/USD": 0.60},
+        rebalance_triggered=False,
+    )
+    assert notifier.should_notify_portfolio_step(quiet_14) is False
+
+    # 2. Quiet HOLD at daily heartbeat hour (08:00 UTC) -> sent with [DAILY] badge
+    quiet_08 = quiet_14.model_copy(update={"candle_timestamp": datetime(2026, 6, 1, 8, 0, tzinfo=UTC)})
+    assert notifier.should_notify_portfolio_step(quiet_08) is True
+    msg_daily = notifier.format_portfolio_step_message(quiet_08, insts)
+    assert "[DAILY]" in msg_daily
+    assert "<b>bitfinex_portfolio_btc_eth_gold</b>" in msg_daily
+
+    # 3. Rebalance / trade event at any hour -> sent immediately, HTML safely escaped
+    err_outcome = quiet_14.model_copy(update={"error": "API <timeout> & retry_failed"})
+    assert notifier.should_notify_portfolio_step(err_outcome) is True
+    msg_err = notifier.format_portfolio_step_message(err_outcome, insts)
+    assert "[ERROR]" in msg_err
+    assert "&lt;timeout&gt; &amp; retry_failed" in msg_err
+
+    # 4. CLI `utrader test-telegram` posts HTML message cleanly
+    captured: dict[str, Any] = {}
+
+    class _FakeResp:
+        status_code = 200
+        text = '{"ok": true}'
+
+    def _fake_post(self: httpx.Client, url: str, **kwargs: Any) -> _FakeResp:
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return _FakeResp()
+
+    monkeypatch.setattr(httpx.Client, "post", _fake_post)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:fake-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "99999")
+
+    runner = CliRunner()
+    res = runner.invoke(app, ["test-telegram"])
+    assert res.exit_code == 0, res.output
+    assert "Telegram test sent successfully" in res.output
+    assert captured["json"]["parse_mode"] == "HTML"
+    assert captured["json"]["chat_id"] == "99999"

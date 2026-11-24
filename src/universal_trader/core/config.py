@@ -216,6 +216,16 @@ class NotifierConfig(BaseModel):
     enabled: bool = False
     bot_token: str = ""
     chat_id: str = ""
+    notify_on: str = "all"  # all | events
+    daily_summary_hour_utc: int | None = Field(default=8, ge=0, le=23)
+
+    @model_validator(mode="after")
+    def _validate_notifier(self) -> NotifierConfig:
+        if self.notify_on not in {"all", "events"}:
+            raise ValueError(
+                f"Unsupported notifier.notify_on '{self.notify_on}'. Must be 'all' or 'events'"
+            )
+        return self
 
 
 class StorageConfig(BaseModel):

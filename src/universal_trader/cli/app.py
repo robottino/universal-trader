@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -625,6 +627,7 @@ def trade(
     paths = RuntimePaths.resolve()
     db_path = resolve_db_path(cfg, paths)
     lock_path = paths.state_dir / f"{cfg.name}.lock"
+    notifier = build_notifier(cfg)
 
     try:
         with ExecutionLock(lock_path):
@@ -638,7 +641,6 @@ def trade(
                 data_provider=provider,
                 dry_run_override=dry_run,
             )
-            notifier = build_notifier(cfg)
 
             if cfg.is_portfolio:
                 candles_by_id = {
@@ -752,6 +754,17 @@ def trade(
     except ConcurrencyLockError as exc:
         console.print(f"[yellow]Skipped:[/yellow] {exc}")
         raise typer.Exit(code=2) from exc
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        logger.exception("Unhandled error during trade cycle for '%s'", cfg.name)
+        notifier.notify_alert(
+            title=f"TRADE ERROR ({cfg.name})",
+            message=f"{type(exc).__name__}: {exc}",
+            instrument=None if cfg.is_portfolio else cfg.instrument,
+        )
+        console.print(f"[red]Trade error ({type(exc).__name__}):[/red] {exc}")
+        raise typer.Exit(code=1) from exc
 
     if outcome.skipped_idempotent:
         console.print(
@@ -842,6 +855,65 @@ def report(
         if not fills_df.empty:
             fills_df.to_csv(output_dir / "report_fills.csv", index=False)
         console.print(f"[green]CSV reports exported to:[/green] {output_dir}")
+
+
+@app.command("test-telegram")
+def test_telegram(
+    config: Annotated[
+        Path | None,
+        typer.Option("--config", "-c", help="Optional YAML config (defaults to TELEGRAM_* from .env)"),
+    ] = None,
+    log_level: Annotated[str, typer.Option("--log-level")] = "WARNING",
+) -> None:
+    """Send a test message via Telegram Bot API to verify token, chat_id, and HTML formatting."""
+    configure_logging(level=log_level)
+    from universal_trader.reporting.telegram import TelegramNotifier
+
+    yaml_disabled = False
+    if config is not None:
+        cfg = load_config(config)
+        bot_token = cfg.notifier.bot_token
+        chat_id = cfg.notifier.chat_id
+        notify_on = cfg.notifier.notify_on
+        daily_hour = cfg.notifier.daily_summary_hour_utc
+        label = cfg.name
+        yaml_disabled = not cfg.notifier.enabled
+    else:
+        paths = RuntimePaths.resolve()
+        dotenv_path = paths.root / ".env"
+        if dotenv_path.exists():
+            load_dotenv(dotenv_path=dotenv_path, override=False)
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        notify_on = "events"
+        daily_hour = 8
+        label = "universal_trader"
+
+    if not bot_token or not chat_id:
+        console.print(
+            "[red]FAIL:[/red] TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID mancanti "
+            "(verifica il file .env o la sezione notifier della YAML)."
+        )
+        raise typer.Exit(code=1)
+
+    notifier = TelegramNotifier(
+        bot_token=bot_token,
+        chat_id=chat_id,
+        enabled=True,
+        notify_on=notify_on,
+        daily_summary_hour_utc=daily_hour,
+    )
+    ok, detail = notifier.send_test_message(label=label)
+    if not ok:
+        console.print(f"[red]Telegram test failed:[/red] {detail}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]Telegram test sent successfully[/green] (label={label}, notify_on={notify_on}).")
+    if yaml_disabled:
+        console.print(
+            "[yellow]Nota:[/yellow] nella YAML `notifier.enabled` è ancora `false` — "
+            "impostalo a `true` per ricevere le notifiche da `utrader trade`."
+        )
 
 
 def main() -> None:

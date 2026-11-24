@@ -133,9 +133,11 @@ broker:
 
 notifier:
   type: telegram
-  enabled: false                   # imposta true con TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID in .env
+  enabled: true                   # imposta true con TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID in .env
   bot_token: "${TELEGRAM_BOT_TOKEN}"
   chat_id: "${TELEGRAM_CHAT_ID}"
+  notify_on: events                # events = solo trade/segnali/errori + 1 riepilogo al giorno | all = ogni ora
+  daily_summary_hour_utc: 8        # riepilogo giornaliero alle 08:00 UTC (09:00 CET / 10:00 CEST)
 
 storage:
   db_path: "state/bitfinex_portfolio.db"

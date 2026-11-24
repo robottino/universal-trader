@@ -70,6 +70,8 @@ def build_notifier(config: AppConfig) -> Notifier:
         bot_token=config.notifier.bot_token,
         chat_id=config.notifier.chat_id,
         enabled=config.notifier.enabled,
+        notify_on=config.notifier.notify_on,
+        daily_summary_hour_utc=config.notifier.daily_summary_hour_utc,
     )
 
 
