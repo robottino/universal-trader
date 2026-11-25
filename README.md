@@ -35,6 +35,9 @@ uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml
 uv run utrader test-telegram --config configs/bitfinex_portfolio_btc_eth_gold.yaml --scenario trade
 uv run utrader test-telegram --config configs/bitfinex_portfolio_btc_eth_gold.yaml --scenario daily
 
+# Start standalone interactive Telegram Bot microservice (/status, /daily, /fills, /signals, /halt, /resume)
+uv run utrader telegram-bot --config configs/bitfinex_portfolio_btc_eth_gold.yaml
+
 # Operational PnL, drawdown & fills report from SQLite
 uv run utrader report --db state/bitfinex_portfolio.db
 ```
@@ -49,8 +52,11 @@ podman build --target cpu -t universal-trader:cpu -f Containerfile .
 podman compose run --rm trader doctor
 podman compose run --rm trader trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml --dry-run
 
-# Start hourly background scheduler
+# Start hourly background scheduler + interactive Telegram Bot microservice
 podman compose --profile scheduler up -d
+
+# Or start ONLY the interactive Telegram Bot microservice
+podman compose --profile telegram up -d
 ```
 
 ## Development & Testing

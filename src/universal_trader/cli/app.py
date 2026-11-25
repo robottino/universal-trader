@@ -932,6 +932,63 @@ def test_telegram(
         )
 
 
+@app.command("telegram-bot")
+def telegram_bot(
+    config: Annotated[Path, typer.Option("--config", "-c", help="Path to YAML config")],
+    poll_timeout: Annotated[int, typer.Option("--poll-timeout", help="Long-polling timeout in seconds")] = 25,
+    log_level: Annotated[str, typer.Option("--log-level")] = "INFO",
+) -> None:
+    """Run the standalone interactive Telegram Bot microservice (/status, /daily, /fills, /signals, /halt, /resume)."""
+    configure_logging(level=log_level)
+    from universal_trader.reporting.telegram import TelegramNotifier
+    from universal_trader.reporting.telegram_bot import TelegramBotService
+
+    cfg = load_config(config)
+    paths = RuntimePaths.resolve()
+    bot_token = cfg.notifier.bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = cfg.notifier.chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not bot_token or not chat_id:
+        console.print(
+            "[red]FAIL:[/red] TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID sono obbligatori per `telegram-bot`."
+        )
+        raise typer.Exit(code=1)
+
+    db_path = resolve_db_path(cfg, paths)
+    store = SQLiteStateStore(db_path)
+    provider = build_data_provider(cfg, paths)
+    # Enforce dry_run_override=True so the bot microservice is physically read-only toward any exchange
+    broker = build_broker(cfg, store=store, data_provider=provider, dry_run_override=True)
+
+    tpl_raw = Path(cfg.notifier.template_path)
+    daily_tpl_raw = Path(cfg.notifier.daily_template_path)
+    notifier = TelegramNotifier(
+        bot_token=bot_token,
+        chat_id=chat_id,
+        enabled=True,
+        notify_on=cfg.notifier.notify_on,
+        daily_summary_hour_utc=cfg.notifier.daily_summary_hour_utc,
+        template_path=tpl_raw if tpl_raw.is_absolute() else (paths.root / tpl_raw),
+        daily_template_path=daily_tpl_raw if daily_tpl_raw.is_absolute() else (paths.root / daily_tpl_raw),
+    )
+
+    service = TelegramBotService(
+        config=cfg,
+        paths=paths,
+        store=store,
+        provider=provider,
+        broker=broker,
+        notifier=notifier,
+        bot_token=bot_token,
+        allowed_chat_id=chat_id,
+        poll_timeout=poll_timeout,
+    )
+    console.print(
+        f"[green]Telegram Bot microservice active[/green] for [bold]{cfg.name}[/bold] "
+        f"(authorized chat_id={chat_id}). Press Ctrl+C to stop."
+    )
+    service.run_forever()
+
+
 def main() -> None:
     app()
 

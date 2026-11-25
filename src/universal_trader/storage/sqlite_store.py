@@ -115,6 +115,12 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     PRIMARY KEY(account_key, instrument_id)
 );
 
+CREATE TABLE IF NOT EXISTS runtime_controls (
+    config_name TEXT PRIMARY KEY,
+    manual_halt INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_key
     ON runs(config_name, instrument_id, timeframe, candle_timestamp);
 CREATE INDEX IF NOT EXISTS idx_equity_config_ts
@@ -180,6 +186,12 @@ class SQLiteStateStore:
 
     def is_halted(self, config_name: str) -> bool:
         with self._connect() as conn:
+            ctrl = conn.execute(
+                "SELECT manual_halt FROM runtime_controls WHERE config_name = ?",
+                (config_name,),
+            ).fetchone()
+            if ctrl is not None and bool(ctrl["manual_halt"]):
+                return True
             row = conn.execute(
                 """
                 SELECT halted FROM equity_snapshots
@@ -189,6 +201,52 @@ class SQLiteStateStore:
                 (config_name,),
             ).fetchone()
             return bool(row["halted"]) if row is not None else False
+
+    def set_halted(self, config_name: str, halted: bool) -> None:
+        """Persist manual /halt or /resume across runtime_controls, latest snapshot, and paper account."""
+        now_str = datetime.now(UTC).isoformat()
+        flag = 1 if halted else 0
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO runtime_controls (config_name, manual_halt, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(config_name) DO UPDATE SET
+                    manual_halt = excluded.manual_halt,
+                    updated_at = excluded.updated_at
+                """,
+                (config_name, flag, now_str),
+            )
+            conn.execute(
+                """
+                UPDATE equity_snapshots
+                SET halted = ?
+                WHERE id = (
+                    SELECT id FROM equity_snapshots
+                    WHERE config_name = ?
+                    ORDER BY id DESC LIMIT 1
+                )
+                """,
+                (flag, config_name),
+            )
+            conn.execute(
+                "UPDATE paper_accounts SET halted = ?, updated_at = ? WHERE account_key = ?",
+                (flag, now_str, config_name),
+            )
+
+    def get_last_run(self, config_name: str) -> dict[str, Any] | None:
+        """Return metadata of the most recent recorded run for `config_name`, if any."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, instrument_id, timeframe, candle_timestamp, executed_at, status, error
+                FROM runs
+                WHERE config_name = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (config_name,),
+            ).fetchone()
+            return dict(row) if row is not None else None
 
     def record_step(self, outcome: StepOutcome) -> int:
         ts_str = self._iso_utc(outcome.candle_timestamp)

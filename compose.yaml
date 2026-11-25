@@ -1,9 +1,12 @@
 # Universal Trader — OCI Compose specification
 # Compatible with both `podman compose` and `docker compose`.
 #
-# Linux SELinux note (Fedora/RHEL with Podman):
-#   Append `:Z` to bind mounts if SELinux enforces labels, and pass `--userns=keep-id`
-#   in standalone `podman run` invocations to map your host UID cleanly.
+# Usage:
+#   # Start ONLY the interactive Telegram Bot microservice:
+#   podman compose --profile telegram up -d
+#
+#   # Start BOTH the hourly trading scheduler AND the Telegram Bot microservice:
+#   podman compose --profile scheduler up -d
 
 x-common-volumes: &common-volumes
   - ./configs:/app/configs:ro
@@ -48,4 +51,22 @@ services:
           utrader trade --config "$${UTRADER_CONFIG}" $${UTRADER_TRADE_ARGS} || true
           sleep "$${UTRADER_INTERVAL_SECONDS}"
         done
+    restart: unless-stopped
+
+  telegram-bot:
+    image: universal-trader:cpu
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: cpu
+    profiles: ["scheduler", "telegram"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/bitfinex_portfolio_btc_eth_gold.yaml}
+    volumes: *common-volumes
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - exec utrader telegram-bot --config "$${UTRADER_CONFIG}"
     restart: unless-stopped

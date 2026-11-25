@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- macOS launchd KeepAlive agent for the interactive Telegram Bot microservice -->
+<!-- Copy to ~/Library/LaunchAgents/com.universal-trader.telegram-bot.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.universal-trader.telegram-bot</string>
+    <key>WorkingDirectory</key>
+    <string>/REPLACE/WITH/PATH/TO/universal-trader</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>utrader</string>
+        <string>telegram-bot</string>
+        <string>--config</string>
+        <string>configs/bitfinex_portfolio_btc_eth_gold.yaml</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/REPLACE/WITH/PATH/TO/universal-trader/state/telegram_bot.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/REPLACE/WITH/PATH/TO/universal-trader/state/telegram_bot.err.log</string>
+</dict>
+</plist>
