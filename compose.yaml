@@ -1,51 +1,49 @@
-# Universal Trader — OCI Compose specification
-# Compatible with both `podman compose` and `docker compose`.
+# Universal Trader — OCI / Portainer / Docker & Podman Compose specification
 #
-# Usage:
-#   # Start ONLY the interactive Telegram Bot microservice:
-#   podman compose --profile telegram up -d
-#
-#   # Start BOTH the hourly trading scheduler AND the Telegram Bot microservice:
-#   podman compose --profile scheduler up -d
+# Ready out-of-the-box for Portainer Git Stacks (`docker compose up -d`):
+# - Starts `scheduler` (runs `doctor` at boot, then `trade` hourly) + `telegram-bot` automatically.
+# - Forwards environment variables from Portainer's Stack "Environment variables" UI (or local `.env`).
+# - Uses Docker Named Volumes so UID 1000 (`utrader`) has write permissions automatically
+#   (no `[Errno 13] Permission denied` on root-owned Portainer Git clone folders) and state
+#   persists safely across Git "Pull and redeploy" updates.
 
 x-common-volumes: &common-volumes
   - ./configs:/app/configs:ro
-  - ./data_cache:/app/data_cache
-  - ./forecast_cache:/app/forecast_cache
-  - ./state:/app/state
-  - ./reports:/app/reports
+  - data_cache:/app/data_cache
+  - forecast_cache:/app/forecast_cache
+  - state:/app/state
+  - reports:/app/reports
+
+x-common-env: &common-env
+  UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/bitfinex_portfolio_btc_eth_gold.yaml}
+  UTRADER_INTERVAL_SECONDS: ${UTRADER_INTERVAL_SECONDS:-3600}
+  UTRADER_TRADE_ARGS: ${UTRADER_TRADE_ARGS:-}
+  BITFINEX_PAPER_API_KEY: ${BITFINEX_PAPER_API_KEY:-}
+  BITFINEX_PAPER_API_SECRET: ${BITFINEX_PAPER_API_SECRET:-}
+  BITFINEX_LIVE_API_KEY: ${BITFINEX_LIVE_API_KEY:-}
+  BITFINEX_LIVE_API_SECRET: ${BITFINEX_LIVE_API_SECRET:-}
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+  TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+  ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+  ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
 
 services:
-  trader:
-    image: universal-trader:cpu
-    build:
-      context: .
-      dockerfile: Containerfile
-      target: cpu
-    env_file:
-      - path: .env
-        required: false
-    volumes: *common-volumes
-    restart: "no"
-
   scheduler:
     image: universal-trader:cpu
     build:
       context: .
       dockerfile: Containerfile
       target: cpu
-    profiles: ["scheduler"]
     env_file:
       - path: .env
         required: false
-    environment:
-      UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/bitfinex_portfolio_btc_eth_gold.yaml}
-      UTRADER_INTERVAL_SECONDS: ${UTRADER_INTERVAL_SECONDS:-3600}
-      UTRADER_TRADE_ARGS: ${UTRADER_TRADE_ARGS:-}
+    environment: *common-env
     volumes: *common-volumes
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        set -e
+        utrader doctor --config "$${UTRADER_CONFIG}"
         while true; do
           echo "[scheduler] Running utrader trade --config $${UTRADER_CONFIG} $${UTRADER_TRADE_ARGS}"
           utrader trade --config "$${UTRADER_CONFIG}" $${UTRADER_TRADE_ARGS} || true
@@ -59,14 +57,33 @@ services:
       context: .
       dockerfile: Containerfile
       target: cpu
-    profiles: ["scheduler", "telegram"]
     env_file:
       - path: .env
         required: false
-    environment:
-      UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/bitfinex_portfolio_btc_eth_gold.yaml}
+    environment: *common-env
     volumes: *common-volumes
     entrypoint: ["/bin/sh", "-c"]
     command:
       - exec utrader telegram-bot --config "$${UTRADER_CONFIG}"
     restart: unless-stopped
+
+  # One-shot manual CLI helper (`podman compose --profile cli run --rm trader doctor`)
+  trader:
+    image: universal-trader:cpu
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: cpu
+    profiles: ["cli"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *common-env
+    volumes: *common-volumes
+    restart: "no"
+
+volumes:
+  data_cache:
+  forecast_cache:
+  state:
+  reports:
