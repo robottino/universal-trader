@@ -7,8 +7,9 @@
 #   (no `[Errno 13] Permission denied` on root-owned Portainer Git clone folders) and state
 #   persists safely across Git "Pull and redeploy" updates.
 
+# Note: `/app/configs` (including `configs/templates/`) is baked into the image by Containerfile
+# so Portainer Git Stacks never shadow it with an empty host bind mount.
 x-common-volumes: &common-volumes
-  - ./configs:/app/configs:ro
   - data_cache:/app/data_cache
   - forecast_cache:/app/forecast_cache
   - state:/app/state
