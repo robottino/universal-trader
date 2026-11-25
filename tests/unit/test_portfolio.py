@@ -281,6 +281,7 @@ def test_compute_round_trip_pnls_tracks_multiple_instruments_independently() -> 
 
 def test_telegram_notifier_event_filtering_html_escape_and_cli_command(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     import httpx
     from typer.testing import CliRunner
@@ -290,15 +291,20 @@ def test_telegram_notifier_event_filtering_html_escape_and_cli_command(
     from universal_trader.reporting.telegram import TelegramNotifier
 
     insts = _make_instruments()
+    tpl_dir = Path(__file__).resolve().parents[2] / "configs" / "templates"
+    tpl_path = tpl_dir / "telegram_portfolio.html.j2"
+    daily_tpl_path = tpl_dir / "telegram_daily.html.j2"
     notifier = TelegramNotifier(
         bot_token="123456:fake-token",
         chat_id="99999",
         enabled=True,
         notify_on="events",
         daily_summary_hour_utc=8,
+        template_path=tpl_path,
+        daily_template_path=daily_tpl_path,
     )
 
-    # 1. Quiet HOLD at non-heartbeat hour -> suppressed
+    # 1. Quiet HOLD (even if rebalance_triggered without fills/rejections) at non-heartbeat hour -> suppressed
     quiet_14 = PortfolioStepOutcome(
         config_name="bitfinex_portfolio_btc_eth_gold",
         timeframe="1h",
@@ -308,25 +314,66 @@ def test_telegram_notifier_event_filtering_html_escape_and_cli_command(
         target_weights={"BTC/USD": 0.0, "ETH/USD": 0.0, "XAUT/USD": 0.60},
         current_weights_before={"BTC/USD": 0.0, "ETH/USD": 0.0, "XAUT/USD": 0.60},
         current_weights_after={"BTC/USD": 0.0, "ETH/USD": 0.0, "XAUT/USD": 0.60},
-        rebalance_triggered=False,
+        rebalance_triggered=True,
     )
     assert notifier.should_notify_portfolio_step(quiet_14) is False
 
-    # 2. Quiet HOLD at daily heartbeat hour (08:00 UTC) -> sent with [DAILY] badge
-    quiet_08 = quiet_14.model_copy(update={"candle_timestamp": datetime(2026, 6, 1, 8, 0, tzinfo=UTC)})
-    assert notifier.should_notify_portfolio_step(quiet_08) is True
-    msg_daily = notifier.format_portfolio_step_message(quiet_08, insts)
-    assert "[DAILY]" in msg_daily
-    assert "<b>bitfinex_portfolio_btc_eth_gold</b>" in msg_daily
+    # 1b. Actual executed fill -> notified immediately
+    with_fill = quiet_14.model_copy(
+        update={
+            "fills": [
+                FillResult(
+                    order_id="f1",
+                    instrument_id="XAUT/USD",
+                    timestamp=datetime(2026, 6, 1, 14, 0, tzinfo=UTC),
+                    side=OrderSide.BUY,
+                    quantity=1.0,
+                    fill_price=3600.0,
+                    notional=3600.0,
+                    fee=0.0,
+                    status=OrderStatus.FILLED,
+                )
+            ]
+        }
+    )
+    assert notifier.should_notify_portfolio_event(with_fill) is True
 
-    # 3. Rebalance / trade event at any hour -> sent immediately, HTML safely escaped
+    # 2. Quiet HOLD at daily heartbeat hour (08:00 UTC) -> triggers dedicated daily template
+    quiet_08 = quiet_14.model_copy(update={"candle_timestamp": datetime(2026, 6, 1, 8, 0, tzinfo=UTC)})
+    assert notifier.should_notify_portfolio_event(quiet_08) is False
+    assert notifier.should_notify_portfolio_daily(quiet_08) is True
+    msg_daily = notifier.format_daily_summary_message(
+        quiet_08,
+        insts,
+        daily_stats={"start_equity": 9500.0, "fills": []},
+    )
+    assert "Riepilogo Giornaliero" in msg_daily
+    assert "Inizio giornata" in msg_daily
+    assert "Fine giornata" in msg_daily
+    assert "Non allocato (Cash)" in msg_daily
+    assert "Nessuna operazione eseguita" in msg_daily
+
+    # 3. Error event -> sent immediately, HTML safely escaped via Jinja2 autoescape
     err_outcome = quiet_14.model_copy(update={"error": "API <timeout> & retry_failed"})
-    assert notifier.should_notify_portfolio_step(err_outcome) is True
+    assert notifier.should_notify_portfolio_event(err_outcome) is True
     msg_err = notifier.format_portfolio_step_message(err_outcome, insts)
     assert "[ERROR]" in msg_err
     assert "&lt;timeout&gt; &amp; retry_failed" in msg_err
 
-    # 4. CLI `utrader test-telegram` posts HTML message cleanly
+    # 4. Missing template files MUST fail fast with FileNotFoundError (zero fallback!)
+    bad_notifier = TelegramNotifier(
+        bot_token="123456:fake-token",
+        chat_id="99999",
+        enabled=True,
+        template_path=tmp_path / "does_not_exist.html.j2",
+        daily_template_path=tmp_path / "daily_missing.html.j2",
+    )
+    with pytest.raises(FileNotFoundError, match="Telegram template file not found"):
+        bad_notifier.format_portfolio_step_message(quiet_08, insts)
+    with pytest.raises(FileNotFoundError, match="Telegram template file not found"):
+        bad_notifier.format_daily_summary_message(quiet_08, insts)
+
+    # 5. CLI `utrader test-telegram` renders external template and posts HTML message cleanly
     captured: dict[str, Any] = {}
 
     class _FakeResp:
@@ -343,8 +390,19 @@ def test_telegram_notifier_event_filtering_html_escape_and_cli_command(
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "99999")
 
     runner = CliRunner()
-    res = runner.invoke(app, ["test-telegram"])
+    res = runner.invoke(app, ["test-telegram", "--scenario", "trade"])
     assert res.exit_code == 0, res.output
     assert "Telegram test sent successfully" in res.output
     assert captured["json"]["parse_mode"] == "HTML"
     assert captured["json"]["chat_id"] == "99999"
+    assert "[TRADE]" in captured["json"]["text"]
+
+    # 6. CLI `--dry-run` for daily and daily_empty renders dedicated daily summary template
+    res_dry = runner.invoke(app, ["test-telegram", "--scenario", "daily", "--dry-run"])
+    assert res_dry.exit_code == 0, res_dry.output
+    assert "Riepilogo Giornaliero" in res_dry.output
+    assert "Operazioni della giornata (2)" in res_dry.output
+
+    res_empty = runner.invoke(app, ["test-telegram", "--scenario", "daily_empty", "--dry-run"])
+    assert res_empty.exit_code == 0, res_empty.output
+    assert "Nessuna operazione eseguita" in res_empty.output

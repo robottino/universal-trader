@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -694,6 +694,58 @@ class SQLiteStateStore:
         df = pd.DataFrame(rows)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         return df
+
+    def get_daily_summary_stats(
+        self,
+        config_name: str,
+        *,
+        as_of: datetime,
+        window_hours: int = 24,
+    ) -> dict[str, Any]:
+        """Return start-of-day equity (24h ago) and fills executed during (as_of - 24h, as_of]."""
+        end_dt = ensure_utc(as_of)
+        start_dt = end_dt - timedelta(hours=window_hours)
+        start_iso = start_dt.isoformat()
+        end_iso = end_dt.isoformat()
+
+        with self._connect() as conn:
+            # Prefer the latest snapshot at or before start_dt (yesterday's daily snapshot);
+            # if none exists yet (first day of operation), fall back to the earliest snapshot in window.
+            snap_before = conn.execute(
+                """
+                SELECT equity, timestamp FROM equity_snapshots
+                WHERE config_name = ? AND timestamp <= ?
+                ORDER BY timestamp DESC, id DESC LIMIT 1
+                """,
+                (config_name, start_iso),
+            ).fetchone()
+            if snap_before is None:
+                snap_before = conn.execute(
+                    """
+                    SELECT equity, timestamp FROM equity_snapshots
+                    WHERE config_name = ? AND timestamp <= ?
+                    ORDER BY timestamp ASC, id ASC LIMIT 1
+                    """,
+                    (config_name, end_iso),
+                ).fetchone()
+
+            fill_rows = conn.execute(
+                """
+                SELECT timestamp, instrument_id, side, quantity, fill_price, notional, fee, status
+                FROM fills
+                WHERE config_name = ? AND timestamp > ? AND timestamp <= ?
+                  AND quantity > 0 AND status != 'REJECTED'
+                ORDER BY timestamp ASC, id ASC
+                """,
+                (config_name, start_iso, end_iso),
+            ).fetchall()
+
+        return {
+            "period_start": start_dt,
+            "period_end": end_dt,
+            "start_equity": float(snap_before["equity"]) if snap_before is not None else None,
+            "fills": [dict(r) for r in fill_rows],
+        }
 
     def get_forecasts(self, config_name: str | None = None) -> list[dict[str, Any]]:
         query = "SELECT * FROM forecasts"

@@ -627,7 +627,7 @@ def trade(
     paths = RuntimePaths.resolve()
     db_path = resolve_db_path(cfg, paths)
     lock_path = paths.state_dir / f"{cfg.name}.lock"
-    notifier = build_notifier(cfg)
+    notifier = build_notifier(cfg, paths=paths)
 
     try:
         with ExecutionLock(lock_path):
@@ -863,12 +863,26 @@ def test_telegram(
         Path | None,
         typer.Option("--config", "-c", help="Optional YAML config (defaults to TELEGRAM_* from .env)"),
     ] = None,
+    scenario: Annotated[
+        str,
+        typer.Option(
+            "--scenario",
+            "-s",
+            help="Sample scenario to render: trade | daily | daily_empty | risk | error",
+        ),
+    ] = "trade",
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Render and print template locally without calling Telegram API"),
+    ] = False,
     log_level: Annotated[str, typer.Option("--log-level")] = "WARNING",
 ) -> None:
-    """Send a test message via Telegram Bot API to verify token, chat_id, and HTML formatting."""
+    """Render the external Telegram Jinja2 template with sample data and send a test message."""
     configure_logging(level=log_level)
+    from universal_trader.core.models import AssetClass, Instrument
     from universal_trader.reporting.telegram import TelegramNotifier
 
+    paths = RuntimePaths.resolve()
     yaml_disabled = False
     if config is not None:
         cfg = load_config(config)
@@ -876,10 +890,15 @@ def test_telegram(
         chat_id = cfg.notifier.chat_id
         notify_on = cfg.notifier.notify_on
         daily_hour = cfg.notifier.daily_summary_hour_utc
+        tpl_raw = Path(cfg.notifier.template_path)
+        daily_tpl_raw = Path(cfg.notifier.daily_template_path)
+        template_path = tpl_raw if tpl_raw.is_absolute() else (paths.root / tpl_raw)
+        daily_template_path = daily_tpl_raw if daily_tpl_raw.is_absolute() else (paths.root / daily_tpl_raw)
         label = cfg.name
+        instruments = list(cfg.instruments)
+        timeframe = cfg.data.timeframe
         yaml_disabled = not cfg.notifier.enabled
     else:
-        paths = RuntimePaths.resolve()
         dotenv_path = paths.root / ".env"
         if dotenv_path.exists():
             load_dotenv(dotenv_path=dotenv_path, override=False)
@@ -887,9 +906,17 @@ def test_telegram(
         chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
         notify_on = "events"
         daily_hour = 8
-        label = "universal_trader"
+        template_path = paths.root / "configs" / "templates" / "telegram_portfolio.html.j2"
+        daily_template_path = paths.root / "configs" / "templates" / "telegram_daily.html.j2"
+        label = "bitfinex_portfolio_btc_eth_gold"
+        instruments = [
+            Instrument(id="BTC/USD", asset_class=AssetClass.CRYPTO, base="BTC", quote_currency="USD"),
+            Instrument(id="ETH/USD", asset_class=AssetClass.CRYPTO, base="ETH", quote_currency="USD"),
+            Instrument(id="XAUT/USD", asset_class=AssetClass.CRYPTO, base="XAUT", quote_currency="USD"),
+        ]
+        timeframe = "1h"
 
-    if not bot_token or not chat_id:
+    if not dry_run and (not bot_token or not chat_id):
         console.print(
             "[red]FAIL:[/red] TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID mancanti "
             "(verifica il file .env o la sezione notifier della YAML)."
@@ -899,16 +926,38 @@ def test_telegram(
     notifier = TelegramNotifier(
         bot_token=bot_token,
         chat_id=chat_id,
-        enabled=True,
+        enabled=not dry_run,
         notify_on=notify_on,
         daily_summary_hour_utc=daily_hour,
+        template_path=template_path,
+        daily_template_path=daily_template_path,
     )
-    ok, detail = notifier.send_test_message(label=label)
+    active_tpl = daily_template_path if scenario in {"daily", "daily_empty"} else template_path
+    try:
+        ok, detail, rendered = notifier.send_portfolio_test_message(
+            config_name=label,
+            instruments=instruments,
+            timeframe=timeframe,
+            scenario=scenario,
+            dry_run=dry_run,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]FAIL:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if dry_run:
+        console.print(f"[cyan]Template rendered ({active_tpl}):[/cyan]\n")
+        console.print(rendered, markup=False)
+        return
+
     if not ok:
         console.print(f"[red]Telegram test failed:[/red] {detail}")
         raise typer.Exit(code=1)
 
-    console.print(f"[green]Telegram test sent successfully[/green] (label={label}, notify_on={notify_on}).")
+    console.print(
+        f"[green]Telegram test sent successfully[/green] "
+        f"(scenario={scenario}, template={active_tpl.name})."
+    )
     if yaml_disabled:
         console.print(
             "[yellow]Nota:[/yellow] nella YAML `notifier.enabled` è ancora `false` — "

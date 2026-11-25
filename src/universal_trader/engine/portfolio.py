@@ -732,7 +732,12 @@ class PortfolioStepRunner:
         if notify and self.notifier is not None:
             notify_pf_fn = getattr(self.notifier, "notify_portfolio_step", None)
             if callable(notify_pf_fn):
-                notify_pf_fn(outcome, self.config.instruments)
+                daily_stats = (
+                    self.store.get_daily_summary_stats(self.config.name, as_of=candle_ts)
+                    if self.store is not None
+                    else None
+                )
+                notify_pf_fn(outcome, self.config.instruments, daily_stats=daily_stats)
             if is_halted and not portfolio_before.halted:
                 self.notifier.notify_alert(
                     title="PORTFOLIO DRAWDOWN CIRCUIT BREAKER HALTED",

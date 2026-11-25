@@ -8,7 +8,7 @@ from typing import Any
 from universal_trader import load_builtin_plugins
 from universal_trader.brokers.dry_run import DryRunBroker
 from universal_trader.core.calendar import MarketCalendar
-from universal_trader.core.config import AppConfig, RuntimePaths
+from universal_trader.core.config import AppConfig, RuntimePaths, find_project_root
 from universal_trader.core.models import TradingMode
 from universal_trader.core.protocols import Broker, DataProvider, Forecaster, Notifier, Strategy
 from universal_trader.core.registry import registry
@@ -60,11 +60,16 @@ def build_strategy(config: AppConfig) -> Strategy:
     return strat_cls(config.strategy)  # type: ignore[no-any-return]
 
 
-def build_notifier(config: AppConfig) -> Notifier:
+def build_notifier(config: AppConfig, paths: RuntimePaths | None = None) -> Notifier:
     load_builtin_plugins()
     if not config.notifier.enabled or config.notifier.type.lower() == "noop":
         noop_cls: Any = registry.get("notifier", "noop")
         return noop_cls()  # type: ignore[no-any-return]
+    tpl_raw = Path(config.notifier.template_path)
+    daily_tpl_raw = Path(config.notifier.daily_template_path)
+    root = paths.root if paths is not None else find_project_root()
+    tpl_resolved = tpl_raw if tpl_raw.is_absolute() else (root / tpl_raw)
+    daily_tpl_resolved = daily_tpl_raw if daily_tpl_raw.is_absolute() else (root / daily_tpl_raw)
     notif_cls: Any = registry.get("notifier", config.notifier.type)
     return notif_cls(  # type: ignore[no-any-return]
         bot_token=config.notifier.bot_token,
@@ -72,6 +77,8 @@ def build_notifier(config: AppConfig) -> Notifier:
         enabled=config.notifier.enabled,
         notify_on=config.notifier.notify_on,
         daily_summary_hour_utc=config.notifier.daily_summary_hour_utc,
+        template_path=tpl_resolved,
+        daily_template_path=daily_tpl_resolved,
     )
 
 

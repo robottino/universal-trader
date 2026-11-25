@@ -218,6 +218,8 @@ class NotifierConfig(BaseModel):
     chat_id: str = ""
     notify_on: str = "all"  # all | events
     daily_summary_hour_utc: int | None = Field(default=8, ge=0, le=23)
+    template_path: str = "configs/templates/telegram_portfolio.html.j2"
+    daily_template_path: str = "configs/templates/telegram_daily.html.j2"
 
     @model_validator(mode="after")
     def _validate_notifier(self) -> NotifierConfig:
