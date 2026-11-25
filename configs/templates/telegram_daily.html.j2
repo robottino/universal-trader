@@ -1,0 +1,27 @@
+{# Template Telegram (HTML + Jinja2, autoescape attivo) per il RIEPILOGO GIORNALIERO (ultime 24h).
+   Modifica liberamente layout, emoji e testi, poi verifica subito con:
+     uv run utrader test-telegram -c configs/bitfinex_portfolio_btc_eth_gold.yaml --scenario daily
+     uv run utrader test-telegram -c configs/bitfinex_portfolio_btc_eth_gold.yaml --scenario daily_empty
+#}
+📊 <b>Riepilogo Giornaliero — {{ config_name }}</b>{% if is_test %} <i>(TEST)</i>{% endif %}{{ "\n" -}}
+🕒 <code>{{ period_start_utc }}</code> → <code>{{ period_end_utc }}</code> UTC
+
+<b>Capitale</b>
+• Inizio giornata: <code>{{ start_equity }} {{ quote_currency }}</code>
+• Fine giornata: <code>{{ end_equity }} {{ quote_currency }}</code> (<b>{{ delta_pct }}</b> · <code>{{ delta_abs }} {{ quote_currency }}</code>)
+• Drawdown dal picco: <code>{{ drawdown_pct }}</code>{% if halted %} · 🛑 <b>HALTED</b>{% endif %}{{ "\n" }}
+
+<b>Allocazione capitale</b>
+{% for a in allocations -%}
+{%- if a.invested %}🟢{% else %}⚪{% endif %} <code>{{ a.base }}</code>: <code>{{ a.value }} {{ quote_currency }}</code> (<code>{{ a.weight_pct }}</code>{% if a.invested %} · <code>{{ a.quantity }}</code> {{ a.base }}{% endif %})
+{% endfor -%}
+💵 <code>Non allocato (Cash)</code>: <code>{{ cash }} {{ quote_currency }}</code> (<code>{{ cash_pct }}</code>)
+
+<b>Operazioni della giornata ({{ daily_fills | length }})</b>
+{% if daily_fills -%}
+{% for f in daily_fills -%}
+{%- if f.side == "BUY" %}🟩{% else %}🟥{% endif %} <code>{{ f.time_utc }}</code> <b>{{ f.side }}</b> <code>{{ f.quantity }}</code> <code>{{ f.instrument_id }}</code> @ <code>{{ f.fill_price }}</code> (~<code>{{ f.notional }} {{ quote_currency }}</code>)
+{% endfor -%}
+{% else -%}
+<i>Nessuna operazione eseguita nelle ultime 24h.</i>
+{% endif -%}

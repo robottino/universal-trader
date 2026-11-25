@@ -1,0 +1,46 @@
+{# Template Telegram (HTML + Jinja2, autoescape attivo) per il portafoglio multi-asset.
+   Modifica liberamente layout, emoji e testi, poi verifica subito con:
+     uv run utrader test-telegram -c configs/bitfinex_portfolio_btc_eth_gold.yaml --scenario trade
+     uv run utrader test-telegram -c configs/bitfinex_portfolio_btc_eth_gold.yaml --scenario daily
+#}
+{%- set badge_icon = {
+  "TRADE": "⚡",
+  "SIGNAL": "🔄",
+  "RISK": "⚠️",
+  "ERROR": "🚨",
+  "DAILY": "📊",
+  "STEP": "📌"
+}.get(badge, "📌") -%}
+{{ badge_icon }} <b>[{{ badge }}] {{ config_name }}</b>{% if is_test %} <i>(TEST)</i>{% endif %}{{ "\n" -}}
+📦 <code>{{ basket }}</code> · <code>{{ timeframe }}</code>
+🕒 <code>{{ candle_utc }}</code> UTC
+{% if skipped_idempotent %}
+⏭️ <i>Candela già processata (idempotent skip)</i>
+{% elif error %}
+🚨 <b>Errore:</b> <code>{{ error }}</code>
+{% else %}
+
+<b>Segnali &amp; Allocazione</b>
+{% for a in assets -%}
+{%- if a.active %}🟢{% else %}⚪{% endif %} <code>{{ a.base }}</code> · <b>{{ a.signal }}</b> · vol <code>{{ a.vol_pct }}</code> · tgt <code>{{ a.target_pct }}</code> · cur <code>{{ a.after_pct }}</code>
+{% endfor -%}
+{% if fills %}
+
+<b>Ordini eseguiti</b>
+{% for f in fills -%}
+{%- if f.side == "BUY" %}🟩{% else %}🟥{% endif %} <b>{{ f.side }}</b> <code>{{ f.quantity }}</code> <code>{{ f.instrument_id }}</code> @ <code>{{ f.fill_price }}</code> (<code>{{ f.status }}</code>, fee <code>{{ f.fee }}</code>)
+{% endfor -%}
+{% endif -%}
+{% if rejected_orders %}
+
+<b>Risk Manager</b>
+{% for r in rejected_orders -%}
+⚠️ {% if r.halted %}<b>HALTED</b> · {% endif %}<code>{{ r.instrument_id }}</code> (<code>{{ r.guard_name }}</code>): {{ r.reason }}
+{% endfor -%}
+{% endif -%}
+{% if portfolio %}
+
+💰 <b>Equity:</b> <code>{{ portfolio.equity }} {{ portfolio.quote_currency }}</code>
+💵 <b>Cash:</b> <code>{{ portfolio.cash }} {{ portfolio.quote_currency }}</code> (<code>{{ portfolio.cash_pct }}</code>) · <b>DD:</b> <code>{{ portfolio.drawdown_pct }}</code>{% if portfolio.halted %} · 🛑 <b>HALTED</b>{% endif %}
+{% endif -%}
+{% endif -%}
