@@ -1,4 +1,4 @@
-.PHONY: setup test test-all lint typecheck doctor build-cpu build-cuda compose-doctor clean
+.PHONY: setup test lint typecheck doctor build compose-doctor clean
 
 CONTAINER_ENGINE ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
@@ -7,9 +7,6 @@ setup:
 
 test:
 	uv run pytest -m "not slow and not network"
-
-test-all:
-	uv run pytest
 
 lint:
 	uv run ruff check src tests
@@ -20,11 +17,8 @@ typecheck:
 doctor:
 	uv run utrader doctor
 
-build-cpu:
+build:
 	$(CONTAINER_ENGINE) build --target cpu -t universal-trader:cpu -f Containerfile .
-
-build-cuda:
-	$(CONTAINER_ENGINE) build --target cuda -t universal-trader:cuda -f Containerfile .
 
 compose-doctor:
 	$(CONTAINER_ENGINE) compose run --rm trader doctor

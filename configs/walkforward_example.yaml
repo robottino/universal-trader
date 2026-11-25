@@ -18,38 +18,37 @@ instrument:
 data:
   provider: binance
   timeframe: "1h"
-  lookback_bars: 512
+  lookback_bars: 2200
   price_column: close
   features:
-    past_only: ["volume", "log_return_1", "rolling_obi_24"]
-    known_future: ["hour_sin", "hour_cos", "dow_sin", "dow_cos"]
+    past_only: []
+    known_future: []
 
 forecaster:
-  type: timestral
+  type: noop
   params:
-    model_id: "mistralai/Timestral-28M"
-    context_len: 256
-    horizon: 24
-    device: "auto"
-    batch_size: 32
+    model_id: "noop/ema_trend"
+    context_len: 720
+    horizon: 1
 
 strategy:
-  type: tail_risk_kelly
-  signal: median_last
-  theta_buy: 0.01
-  theta_sell: -0.01
-  k_risk: 0.5
-  tail_quantile: 0.05
+  type: ema_trend
+  trend_fast_window: 240
+  trend_slow_window: 720
+  trend_hysteresis_pct: 0.015
+  target_weight_bull: 0.98
+  rebalance_band: 0.15
 
 risk:
   enforce_market_hours: false
   max_data_age_minutes: 90
   max_exposure_pct: 1.0
-  max_drawdown_pct: 0.15
+  max_drawdown_pct: 0.45
   fee_model:
-    pct: 0.001
+    pct: 0.0
     fixed_min: 0.0
   slippage_bps: 5.0
+  enable_fee_guard: false
 
 broker:
   type: simulated
@@ -58,14 +57,12 @@ broker:
 
 walkforward:
   mode: rolling # rolling | expanding
-  train_bars: 360
-  test_bars: 120
-  step_bars: 120
+  train_bars: 4320
+  test_bars: 2160
+  step_bars: 2160
   metric: sharpe_ratio # sharpe_ratio | calmar_ratio | total_roi | sortino_ratio
   min_trades: 2
   initial_cash: 10000.0
   param_grid:
-    strategy.type: ["tail_risk_kelly", "dynamic_kelly", "volatility_adjusted"]
-    strategy.theta_buy: [0.005, 0.01, 0.015]
-    strategy.theta_sell: [-0.005, -0.01]
-    strategy.k_risk: [0.25, 0.5]
+    strategy.trend_fast_window: [180, 240, 360]
+    strategy.trend_slow_window: [600, 720, 960]

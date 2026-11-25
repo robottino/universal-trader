@@ -1,10 +1,10 @@
 # Podman Quadlet + systemd user timer example (Linux rootless)
 # Place files under ~/.config/containers/systemd/ and run:
-#   systemctl --user daemon-reload && systemctl --user enable --now utrader-btc.timer
+#   systemctl --user daemon-reload && systemctl --user enable --now utrader-portfolio.timer
 #
-# --- utrader-btc.container ---
+# --- utrader-portfolio.container ---
 # [Unit]
-# Description=Universal Trader BTC/EUR step
+# Description=Universal Trader Bitfinex Portfolio step
 #
 # [Container]
 # Image=localhost/universal-trader:cpu
@@ -14,16 +14,15 @@
 # Volume=%h/universal-trader/forecast_cache:/app/forecast_cache:Z
 # Volume=%h/universal-trader/state:/app/state:Z
 # Volume=%h/universal-trader/reports:/app/reports:Z
-# Volume=utrader-hf-cache:/app/.hf_cache
 # UserNS=keep-id
-# Exec=trade --config configs/btc_eur_timestral_paper.yaml
+# Exec=trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml
 #
 # [Service]
 # Type=oneshot
 #
-# --- utrader-btc.timer ---
+# --- utrader-portfolio.timer ---
 # [Unit]
-# Description=Run Universal Trader BTC/EUR hourly
+# Description=Run Universal Trader Portfolio hourly
 #
 # [Timer]
 # OnCalendar=*:02:00

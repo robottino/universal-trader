@@ -51,7 +51,6 @@ from universal_trader.engine.portfolio import (
 )
 from universal_trader.engine.runner import TradingStepRunner
 from universal_trader.engine.walkforward import WalkForwardEngine
-from universal_trader.forecasters.device import DeviceManager
 from universal_trader.reporting.plots import (
     plot_backtest_report,
     plot_fan_chart,
@@ -101,42 +100,23 @@ def _parse_date(date_str: str, *, end_of_day: bool = False) -> datetime:
 @app.command()
 def doctor(
     config: Annotated[Path | None, typer.Option("--config", "-c", help="Optional YAML config to validate")] = None,
-    check_model: Annotated[bool, typer.Option("--check-model", help="Also test Timestral package import")] = False,
     log_level: Annotated[str, typer.Option("--log-level", help="Logging verbosity")] = "WARNING",
 ) -> None:
-    """Inspect environment, hardware (CPU/CUDA/MPS), plugins, storage writability, and configs."""
+    """Inspect environment, plugins, storage writability, SQLite WAL, and configs."""
     configure_logging(level=log_level)
     load_builtin_plugins()
     paths = RuntimePaths.resolve()
-    dm = DeviceManager(requested_device="auto")
-    dinfo = dm.resolve()
 
     table = Table(title=f"Universal Trader Doctor v{__version__}", show_lines=True)
     table.add_column("Check", style="bold cyan")
     table.add_column("Status", style="bold")
     table.add_column("Details")
 
-    table.add_row("Python", "[green]OK[/green]", f"{sys.version.split()[0]} ({platform.system()} {platform.machine()})")
-    table.add_row("PyTorch", "[green]OK[/green]", dinfo.torch_version)
     table.add_row(
-        "Compute Device",
+        "Python",
         "[green]OK[/green]",
-        (
-            f"selected={dinfo.device} ({dinfo.accelerator_name}) | dtype={dinfo.dtype_name} | "
-            f"cuda={dinfo.cuda_available}, mps={dinfo.mps_available}, cpus={dinfo.cpu_count}"
-        ),
+        f"{sys.version.split()[0]} ({platform.system()} {platform.machine()}, cpus={os.cpu_count() or 1})",
     )
-
-    # Timestral import check
-    try:
-        import timestral
-
-        ts_loc = getattr(timestral, "__file__", "installed")
-        table.add_row("Timestral Package", "[green]OK[/green]", f"importable ({ts_loc})")
-    except Exception as exc:
-        table.add_row("Timestral Package", "[red]FAIL[/red]", str(exc))
-        console.print(table)
-        raise typer.Exit(code=1) from exc
 
     # Directory & SQLite write check
     dir_errors: list[str] = []
@@ -145,7 +125,6 @@ def doctor(
         ("forecast_cache", paths.forecast_cache_dir),
         ("state", paths.state_dir),
         ("reports", paths.reports_dir),
-        ("hf_cache", dinfo.hf_cache_dir),
     ]:
         try:
             dpath.mkdir(parents=True, exist_ok=True)
@@ -162,7 +141,7 @@ def doctor(
     table.add_row(
         "Storage & Cache",
         "[green]OK[/green]",
-        f"root={paths.root} | hf_cache={dinfo.hf_cache_dir}",
+        f"root={paths.root}",
     )
 
     # SQLite WAL probe
@@ -202,18 +181,6 @@ def doctor(
             console.print(table)
             raise typer.Exit(code=1)
         table.add_row("Configs", "[green]OK[/green]", ", ".join(ok_cfgs))
-
-    if check_model:
-        try:
-            from universal_trader.forecasters.timestral_adapter import TimestralForecaster
-
-            fc = TimestralForecaster(model_id="mistralai/Timestral-5M", device=dinfo.device)
-            fc._ensure_loaded()
-            table.add_row("Timestral-5M Load", "[green]OK[/green]", f"loaded on {fc.effective_device}")
-        except Exception as exc:
-            table.add_row("Timestral-5M Load", "[red]FAIL[/red]", str(exc))
-            console.print(table)
-            raise typer.Exit(code=1) from exc
 
     console.print(table)
 

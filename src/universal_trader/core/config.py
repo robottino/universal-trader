@@ -39,7 +39,6 @@ class RuntimePaths(BaseModel):
     forecast_cache_dir: Path
     state_dir: Path
     reports_dir: Path
-    hf_cache_dir: Path
 
     @classmethod
     def resolve(cls, base_dir: Path | None = None) -> RuntimePaths:
@@ -58,7 +57,6 @@ class RuntimePaths(BaseModel):
             forecast_cache_dir=_dir("UTRADER_FORECAST_CACHE_DIR", "forecast_cache"),
             state_dir=_dir("UTRADER_STATE_DIR", "state"),
             reports_dir=_dir("UTRADER_REPORTS_DIR", "reports"),
-            hf_cache_dir=_dir("HF_HOME", ".hf_cache"),
         )
 
 
@@ -114,17 +112,12 @@ class DataConfig(BaseModel):
 class ForecasterParamsConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    model_id: str = "mistralai/Timestral-28M"
+    model_id: str = "noop/ema_trend"
     context_len: int = Field(default=512, ge=8)
-    horizon: int = Field(default=24, ge=1)
+    horizon: int = Field(default=1, ge=1)
     max_horizon: int = Field(default=1024, ge=1)
     max_context: int = Field(default=32768, ge=8)
-    device: str = "auto"
-    dtype: str = "auto"
     batch_size: int = Field(default=32, ge=1)
-    symmetric_averaging: bool = True
-    clip_nonnegative: bool = True
-    local_files_only: bool = False
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> ForecasterParamsConfig:
@@ -136,13 +129,11 @@ class ForecasterParamsConfig(BaseModel):
             raise ValueError(
                 f"forecaster.params.context_len ({self.context_len}) exceeds max_context ({self.max_context})"
             )
-        if self.device not in {"auto", "cuda", "mps", "cpu"}:
-            raise ValueError(f"Invalid device '{self.device}'. Must be auto|cuda|mps|cpu")
         return self
 
 
 class ForecasterConfig(BaseModel):
-    type: str = "timestral"
+    type: str = "noop"
     params: ForecasterParamsConfig = Field(default_factory=ForecasterParamsConfig)
 
 
@@ -336,8 +327,6 @@ class AppConfig(BaseModel):
                 f"portfolio.benchmark_instrument_id '{self.portfolio.benchmark_instrument_id}' "
                 f"must match one of {ids}"
             )
-        if self.forecaster.type == "timestral" and self.forecaster.params.context_len > 32768:
-            raise ValueError("Timestral max context length is 32768")
         for inst in self.instruments:
             if inst.asset_class in {AssetClass.EQUITY, AssetClass.ETF} and self.data.provider == "binance":
                 raise ValueError("BinanceDataProvider does not support equities/ETFs")

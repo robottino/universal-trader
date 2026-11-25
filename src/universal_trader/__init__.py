@@ -21,7 +21,6 @@ _BUILTIN_PLUGIN_MODULES: tuple[str, ...] = (
     "universal_trader.data.yahoo",
     "universal_trader.forecasters.mock",
     "universal_trader.forecasters.noop",
-    "universal_trader.forecasters.timestral_adapter",
     "universal_trader.reporting.telegram",
     "universal_trader.strategies.sizing",
 )

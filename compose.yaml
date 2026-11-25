@@ -7,7 +7,6 @@
 
 x-common-volumes: &common-volumes
   - ./configs:/app/configs:ro
-  - hf_cache:/app/.hf_cache
   - ./data_cache:/app/data_cache
   - ./forecast_cache:/app/forecast_cache
   - ./state:/app/state
@@ -23,33 +22,7 @@ services:
     env_file:
       - path: .env
         required: false
-    environment:
-      UTRADER_DEVICE: cpu
-      HF_HOME: /app/.hf_cache
     volumes: *common-volumes
-    restart: "no"
-
-  trader-cuda:
-    image: universal-trader:cuda
-    build:
-      context: .
-      dockerfile: Containerfile
-      target: cuda
-    profiles: ["cuda"]
-    env_file:
-      - path: .env
-        required: false
-    environment:
-      UTRADER_DEVICE: cuda
-      HF_HOME: /app/.hf_cache
-    volumes: *common-volumes
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     restart: "no"
 
   scheduler:
@@ -63,11 +36,9 @@ services:
       - path: .env
         required: false
     environment:
-      UTRADER_DEVICE: cpu
-      HF_HOME: /app/.hf_cache
-      UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/btc_eur_timestral_paper.yaml}
+      UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/bitfinex_portfolio_btc_eth_gold.yaml}
       UTRADER_INTERVAL_SECONDS: ${UTRADER_INTERVAL_SECONDS:-3600}
-      UTRADER_TRADE_ARGS: ${UTRADER_TRADE_ARGS:---dry-run}
+      UTRADER_TRADE_ARGS: ${UTRADER_TRADE_ARGS:-}
     volumes: *common-volumes
     entrypoint: ["/bin/sh", "-c"]
     command:
@@ -78,6 +49,3 @@ services:
           sleep "$${UTRADER_INTERVAL_SECONDS}"
         done
     restart: unless-stopped
-
-volumes:
-  hf_cache:

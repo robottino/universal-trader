@@ -64,7 +64,7 @@ def test_forecast_result_quantiles_interpolation_and_serialization() -> None:
     ts = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     fc = ForecastResult(
         instrument_id="BTC/EUR",
-        model_id="mistralai/Timestral-28M",
+        model_id="mock/linear",
         timestamp=ts,
         horizon=3,
         quantiles={
@@ -113,9 +113,9 @@ data:
   timeframe: "1d"
   price_column: adj_close
 forecaster:
-  type: timestral
+  type: mock
   params:
-    model_id: "mistralai/Timestral-28M"
+    model_id: "mock/linear"
     context_len: 128
     horizon: 5
     max_horizon: 32
@@ -143,7 +143,7 @@ instrument:
   base: BTC
   quote_currency: EUR
 forecaster:
-  type: timestral
+  type: mock
   params:
     horizon: 2048
     max_horizon: 1024

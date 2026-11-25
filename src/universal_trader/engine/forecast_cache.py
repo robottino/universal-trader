@@ -35,8 +35,6 @@ class ForecastCache:
             "price_column": config.data.price_column,
             "context_len": config.forecaster.params.context_len,
             "horizon": config.forecaster.params.horizon,
-            "symmetric_averaging": config.forecaster.params.symmetric_averaging,
-            "clip_nonnegative": config.forecaster.params.clip_nonnegative,
             "past_only": sorted(config.data.features.past_only),
             "known_future": sorted(config.data.features.known_future),
             "categorical_past": sorted(config.data.features.categorical_past),
