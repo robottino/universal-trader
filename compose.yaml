@@ -16,7 +16,7 @@ x-common-volumes: &common-volumes
   - reports:/app/reports
 
 x-common-env: &common-env
-  UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/bitfinex_portfolio_btc_eth_gold.yaml}
+  UTRADER_CONFIG: ${UTRADER_CONFIG:-configs/bitfinex_portfolio_btc_eth_gold_xmr_sol.yaml}
   UTRADER_INTERVAL_SECONDS: ${UTRADER_INTERVAL_SECONDS:-3600}
   UTRADER_TRADE_ARGS: ${UTRADER_TRADE_ARGS:-}
   BITFINEX_PAPER_API_KEY: ${BITFINEX_PAPER_API_KEY:-}

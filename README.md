@@ -24,12 +24,12 @@ uv sync && uv run utrader doctor
 # Environment, storage, plugins, and config diagnostics
 uv run utrader doctor
 
-# 6-year multi-asset Bitfinex portfolio backtest (BTC + ETH + Gold XAUT)
-uv run utrader backtest --config configs/bitfinex_portfolio_btc_eth_gold.yaml --start 2021-01-01 --end 2026-11-22
+# 6-year multi-asset Bitfinex portfolio backtest (BTC + ETH + Gold XAUT + XMR + SOL)
+uv run utrader backtest --config configs/bitfinex_portfolio_btc_eth_gold_xmr_sol.yaml --start 2021-01-01 --end 2026-11-25
 
 # Single atomic trading cycle (add --dry-run for zero broker writes)
-uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml --dry-run
-uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold.yaml
+uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold_xmr_sol.yaml --dry-run
+uv run utrader trade --config configs/bitfinex_portfolio_btc_eth_gold_xmr_sol.yaml
 
 # Preview/test Telegram templates (trade | daily | daily_empty | risk | error)
 uv run utrader test-telegram --config configs/bitfinex_portfolio_btc_eth_gold.yaml --scenario trade

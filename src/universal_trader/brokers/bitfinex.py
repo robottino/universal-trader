@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 
-from universal_trader.core.logging import register_secret
+from universal_trader.core.logging import get_logger, register_secret
 from universal_trader.core.models import (
     ApprovedOrder,
     FillResult,
@@ -24,6 +24,8 @@ from universal_trader.core.models import (
     Quote,
 )
 from universal_trader.core.registry import register_broker
+
+logger = get_logger(__name__)
 
 
 class BrokerError(RuntimeError):
@@ -55,6 +57,18 @@ class BitfinexBroker:
         self.base_url = base_url.rstrip("/")
         self.pub_url = pub_url.rstrip("/")
         self._last_nonce: int = 0
+        self._unsupported_paper_symbols: set[str] = set()
+
+    @staticmethod
+    def _live_exchange_symbol(instrument: Instrument) -> str:
+        explicit = instrument.provider_symbols.get("bitfinex")
+        if explicit and "TEST" not in explicit.upper():
+            return explicit
+        base = instrument.base.upper()
+        quote = instrument.quote_currency.upper()
+        if len(base) == 3 and len(quote) == 3:
+            return f"t{base}{quote}"
+        return f"t{base}:{quote}"
 
     def _exchange_symbol(self, instrument: Instrument) -> str:
         if self.paper:
@@ -68,14 +82,13 @@ class BitfinexBroker:
             quote = instrument.quote_currency.upper()
             return f"tTEST{base}:TEST{quote}"
 
-        explicit = instrument.provider_symbols.get("bitfinex")
-        if explicit and "TEST" not in explicit.upper():
-            return explicit
-        base = instrument.base.upper()
-        quote = instrument.quote_currency.upper()
-        if len(base) == 3 and len(quote) == 3:
-            return f"t{base}{quote}"
-        return f"t{base}:{quote}"
+        return self._live_exchange_symbol(instrument)
+
+    def _quote_symbol(self, instrument: Instrument) -> str:
+        sym = self._exchange_symbol(instrument)
+        if self.paper and sym in self._unsupported_paper_symbols:
+            return self._live_exchange_symbol(instrument)
+        return sym
 
     def _wallet_currency(self, code: str) -> str:
         c = code.upper()
@@ -97,14 +110,33 @@ class BitfinexBroker:
             "content-type": "application/json",
         }
 
-    def get_quote(self, instrument: Instrument) -> Quote:
-        symbol = self._exchange_symbol(instrument)
+    def _fetch_single_ticker(self, symbol: str) -> httpx.Response:
         url = f"{self.pub_url}/v2/ticker/{symbol}"
         try:
             with httpx.Client(timeout=self.timeout_seconds) as client:
-                resp = client.get(url)
+                return client.get(url)
         except httpx.HTTPError as exc:
             raise BrokerError(f"Bitfinex ticker request failed for '{symbol}': {exc}") from exc
+
+    def get_quote(self, instrument: Instrument) -> Quote:
+        symbol = self._quote_symbol(instrument)
+        live_symbol = self._live_exchange_symbol(instrument)
+        resp = self._fetch_single_ticker(symbol)
+        if (
+            resp.status_code != 200
+            and self.paper
+            and symbol != live_symbol
+            and ("symbol: invalid" in resp.text.lower() or "10020" in resp.text)
+        ):
+            self._unsupported_paper_symbols.add(symbol)
+            logger.warning(
+                "Bitfinex Paper does not expose '%s'; falling back to live ticker '%s' for quotes.",
+                symbol,
+                live_symbol,
+            )
+            symbol = live_symbol
+            resp = self._fetch_single_ticker(symbol)
+
         if resp.status_code != 200:
             raise BrokerError(f"Bitfinex ticker HTTP {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
@@ -126,7 +158,7 @@ class BitfinexBroker:
         """Batch-fetch live quotes for multiple instruments in a single Bitfinex API call."""
         if not instruments:
             return {}
-        sym_to_inst = {self._exchange_symbol(inst): inst for inst in instruments}
+        sym_to_inst = {self._quote_symbol(inst): inst for inst in instruments}
         symbols_param = ",".join(sym_to_inst.keys())
         url = f"{self.pub_url}/v2/tickers"
         try:
@@ -159,7 +191,7 @@ class BitfinexBroker:
                 ask=ask if ask > 0 else last,
                 last=last,
             )
-        # Fallback for any instrument missing from batch response
+        # Fallback for any instrument missing from batch response (e.g. unsupported tTEST... paper book)
         for inst in instruments:
             if inst.id not in out:
                 out[inst.id] = self.get_quote(inst)
@@ -254,6 +286,26 @@ class BitfinexBroker:
         except httpx.HTTPError as exc:
             raise BrokerError(f"Bitfinex submit_order network error: {exc}") from exc
         if resp.status_code != 200:
+            if self.paper and ("symbol: invalid" in resp.text.lower() or "10020" in resp.text):
+                self._unsupported_paper_symbols.add(symbol)
+                logger.warning(
+                    "Bitfinex Paper sandbox does not support order symbol '%s'; marking order REJECTED "
+                    "(use broker.type='local_paper' for full 5-asset paper fills, or paper=false in live mode).",
+                    symbol,
+                )
+                return FillResult(
+                    order_id="bitfinex-paper-unsupported",
+                    instrument_id=instrument.id,
+                    timestamp=datetime.now(UTC),
+                    side=order.side,
+                    quantity=0.0,
+                    fill_price=order.estimated_price,
+                    notional=0.0,
+                    fee=0.0,
+                    slippage=0.0,
+                    status=OrderStatus.REJECTED,
+                    raw_response={"paper_symbol_unsupported": symbol, "error": resp.text[:300]},
+                )
             raise BrokerError(f"Bitfinex submit_order HTTP {resp.status_code}: {resp.text[:300]}")
 
         res_data: Any = resp.json()

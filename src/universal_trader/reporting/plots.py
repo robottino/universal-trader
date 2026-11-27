@@ -189,6 +189,8 @@ _ASSET_COLOR_HINTS: dict[str, str] = {
     "PAXG": "#eab308",
     "GOLD": "#eab308",
     "SOL": "#14b8a6",   # Solana teal
+    "XMR": "#fb7185",   # Monero coral-rose
+    "LEO": "#22c55e",   # LEO emerald
 }
 _FALLBACK_PALETTE: tuple[str, ...] = (
     "#fb7185",

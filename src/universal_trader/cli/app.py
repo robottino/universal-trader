@@ -30,7 +30,7 @@ from universal_trader.core.calendar import MarketCalendar, parse_timeframe
 from universal_trader.core.config import RuntimePaths, load_config
 from universal_trader.core.locking import ConcurrencyLockError, ExecutionLock
 from universal_trader.core.logging import configure_logging, get_logger
-from universal_trader.core.models import ensure_utc
+from universal_trader.core.models import OrderStatus, ensure_utc
 from universal_trader.core.registry import registry
 from universal_trader.engine.backtest import BacktestRunner
 from universal_trader.engine.factory import (
@@ -664,9 +664,10 @@ def trade(
                     w_a = pf_outcome.current_weights_after.get(inst.id, 0.0)
                     sub = pf_outcome.outcomes.get(inst.id)
                     if sub and sub.fill is not None:
+                        f_color = "yellow" if sub.fill.status == OrderStatus.REJECTED else "green"
                         act_txt = (
-                            f"[green]{sub.fill.side.value} {sub.fill.quantity:.6g} "
-                            f"@ {sub.fill.fill_price:,.2f} ({sub.fill.status.value})[/green]"
+                            f"[{f_color}]{sub.fill.side.value} {sub.fill.quantity:.6g} "
+                            f"@ {sub.fill.fill_price:,.2f} ({sub.fill.status.value})[/{f_color}]"
                         )
                     elif sub and sub.rejected_order is not None:
                         act_txt = f"[yellow]REJECTED ({sub.rejected_order.guard_name}): {sub.rejected_order.reason}[/yellow]"

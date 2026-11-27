@@ -85,6 +85,32 @@ def test_portfolio_config_validation_and_production_yaml() -> None:
     assert cfg.strategy.trend_slow_window == 720
     assert cfg.strategy.macro_ema_window == 4800
 
+    # 5-asset (+XMR+SOL) production YAML must also validate cleanly
+    cfg_5_path = (
+        Path(__file__).resolve().parents[2]
+        / "configs"
+        / "bitfinex_portfolio_btc_eth_gold_xmr_sol.yaml"
+    )
+    cfg_5 = load_config(cfg_5_path)
+    assert cfg_5.is_portfolio is True
+    assert [i.id for i in cfg_5.instruments] == [
+        "BTC/USD",
+        "ETH/USD",
+        "XAUT/USD",
+        "XMR/USD",
+        "SOL/USD",
+    ]
+    assert cfg_5.portfolio.max_weight_per_asset == pytest.approx(0.40)
+    assert cfg_5.data.provider == "bitfinex"
+    prov = BitfinexDataProvider()
+    assert [prov._public_symbol(i) for i in cfg_5.instruments] == [
+        "tBTCUSD",
+        "tETHUSD",
+        "tXAUT:USD",
+        "tXMRUSD",
+        "tSOLUSD",
+    ]
+
     # Duplicate instrument IDs must fail
     insts = _make_instruments()
     with pytest.raises(ValueError, match="Duplicate instrument IDs"):
@@ -406,3 +432,90 @@ def test_telegram_notifier_event_filtering_html_escape_and_cli_command(
     res_empty = runner.invoke(app, ["test-telegram", "--scenario", "daily_empty", "--dry-run"])
     assert res_empty.exit_code == 0, res_empty.output
     assert "Nessuna operazione eseguita" in res_empty.output
+
+
+def test_bitfinex_paper_fallback_for_unsupported_sandbox_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bitfinex Paper lacks tTESTXMR:TESTUSD; quotes must fall back to tXMRUSD and paper orders must not crash."""
+    import httpx
+
+    from universal_trader.core.models import ApprovedOrder
+
+    xmr = Instrument(
+        id="XMR/USD",
+        asset_class=AssetClass.CRYPTO,
+        base="XMR",
+        quote_currency="USD",
+        provider_symbols={"bitfinex": "tXMRUSD"},
+    )
+    sol = Instrument(
+        id="SOL/USD",
+        asset_class=AssetClass.CRYPTO,
+        base="SOL",
+        quote_currency="USD",
+        provider_symbols={"bitfinex": "tSOLUSD", "bitfinex_paper": "tTESTSOL:TESTUSD"},
+    )
+    broker = BitfinexBroker(api_key="paper-k", api_secret="paper-s", paper=True)
+
+    class _FakeResp:
+        def __init__(self, status_code: int, payload: Any, text: str = "") -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text or str(payload)
+
+        def json(self) -> Any:
+            return self._payload
+
+    calls: list[str] = []
+
+    def _fake_get(self: httpx.Client, url: str, **kwargs: Any) -> _FakeResp:
+        params = kwargs.get("params") or {}
+        calls.append(f"{url}?{params.get('symbols', '')}")
+        if url.endswith("/v2/tickers"):
+            # Batch returns tTESTSOL:TESTUSD (plus tXMRUSD once cached as unsupported paper sym)
+            rows = [["tTESTSOL:TESTUSD", 73.4, 10.0, 73.5, 10.0, 0.5, 0.007, 73.45, 1000.0, 75.0, 71.0]]
+            if "tXMRUSD" in str(params.get("symbols", "")):
+                rows.append(["tXMRUSD", 441.0, 5.0, 442.0, 5.0, 2.0, 0.004, 441.5, 500.0, 450.0, 435.0])
+            return _FakeResp(200, rows)
+        if url.endswith("/v2/ticker/tTESTXMR:TESTUSD"):
+            return _FakeResp(500, ["error", 10020, "symbol: invalid"], '["error",10020,"symbol: invalid"]')
+        if url.endswith("/v2/ticker/tXMRUSD"):
+            return _FakeResp(200, [441.0, 5.0, 442.0, 5.0, 2.0, 0.004, 441.5, 500.0, 450.0, 435.0])
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def _fake_post(self: httpx.Client, url: str, **kwargs: Any) -> _FakeResp:
+        return _FakeResp(500, ["error", 10020, "symbol: invalid"], '["error",10020,"symbol: invalid"]')
+
+    monkeypatch.setattr(httpx.Client, "get", _fake_get)
+    monkeypatch.setattr(httpx.Client, "post", _fake_post)
+
+    # First get_quotes detects tTESTXMR:TESTUSD is unsupported and falls back to tXMRUSD
+    quotes_1 = broker.get_quotes([sol, xmr])
+    assert quotes_1["SOL/USD"].last == pytest.approx(73.45)
+    assert quotes_1["XMR/USD"].last == pytest.approx(441.5)
+    assert "tTESTXMR:TESTUSD" in broker._unsupported_paper_symbols
+
+    # Second get_quotes queries tXMRUSD directly in the single batch call (zero extra HTTP calls!)
+    calls.clear()
+    quotes_2 = broker.get_quotes([sol, xmr])
+    assert len(calls) == 1
+    assert "tXMRUSD" in calls[0]
+    assert quotes_2["XMR/USD"].last == pytest.approx(441.5)
+
+    # Paper submit_order on unsupported tTESTXMR:TESTUSD returns REJECTED cleanly without crashing
+    order = ApprovedOrder(
+        instrument_id="XMR/USD",
+        timestamp=datetime(2026, 11, 27, tzinfo=UTC),
+        side=OrderSide.BUY,
+        quantity=1.0,
+        estimated_price=442.0,
+        estimated_notional=442.0,
+        estimated_fee=0.0,
+        estimated_slippage=0.22,
+        target_weight=0.25,
+        reason="Test paper order",
+    )
+    fill = broker.submit_order(order, xmr)
+    assert fill.status == OrderStatus.REJECTED
+    assert fill.quantity == pytest.approx(0.0)
