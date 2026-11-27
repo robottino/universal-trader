@@ -101,6 +101,11 @@ def test_portfolio_config_validation_and_production_yaml() -> None:
         "SOL/USD",
     ]
     assert cfg_5.portfolio.max_weight_per_asset == pytest.approx(0.40)
+    assert cfg_5.portfolio.rebalance_band == pytest.approx(0.15)
+    assert cfg_5.strategy.trend_fast_window == 288
+    assert cfg_5.strategy.trend_slow_window == 864
+    assert cfg_5.strategy.macro_ema_window == 4320
+    assert cfg_5.strategy.macro_hysteresis_pct == pytest.approx(0.03)
     assert cfg_5.data.provider == "bitfinex"
     prov = BitfinexDataProvider()
     assert [prov._public_symbol(i) for i in cfg_5.instruments] == [

@@ -1,9 +1,9 @@
 # Portafoglio Multi-Asset a 5 Strumenti su Bitfinex: BTC + ETH + Oro (XAUT) + Monero (XMR) + Solana (SOL)
 #
-# Validazione storica 2021–2026 ($25.000 iniziali, 0% fee spot Bitfinex + 2bps spread + 5bps slippage):
-#   ROI Totale: +1.424,1% | CAGR: +58,7% | Sharpe: 1,43 | Calmar: 1,88 | MaxDD: 31,3% | ~12,6 trade/mese
+# Validazione Walk-Forward 2021–2026 ($25.000 iniziali, 0% fee spot Bitfinex + 2bps spread + 5bps slippage):
+#   ROI Totale: +1.832,5% | CAGR: +65,3% | Sharpe: 1,51 | Calmar: 2,17 | MaxDD: 30,1% | ~9,8 trade/mese
 #
-# Strategia: EMA Trend 10d/30d (240h/720h, isteresi 1.5%) + Filtro Macro EMA 200d (4800h, isteresi 2.0%)
+# Strategia: EMA Trend 12d/36d (288h/864h, isteresi 1.5%) + Filtro Macro EMA 180d (4320h, isteresi 3.0%)
 # Allocazione: Active Inverse-Volatility Risk Parity (cap 40% per singolo asset su 5 strumenti, max 98% investito)
 # Dati: Candele 1h dirette da Bitfinex v2 API (nessuna API key richiesta per i dati storici/live)
 #
@@ -107,17 +107,17 @@ portfolio:
   vol_lookback_bars: 720           # volatilita' realizzata 30 giorni (30 * 24h)
   vol_min_bars: 24
   vol_floor: 0.10                  # pavimento volatilita' annualizzata 10%
-  rebalance_band: 0.12             # ribilancia solo se scostamento >= 12% (riduce turnover)
+  rebalance_band: 0.15             # ribilancia solo se scostamento >= 15% (riduce turnover inutile tra 5 asset)
   entry_min_weight: 0.05
   exit_weight_threshold: 0.01
   min_trade_notional: 25.0
-  warmup_bars: 2880                # 120 giorni di warmup per convergenza EMA 200d
+  warmup_bars: 2880                # 120 giorni di warmup per convergenza EMA macro
   benchmark_instrument_id: "BTC/USD"
 
 data:
   provider: bitfinex               # Candele 1h 100% dirette da Bitfinex (copre nativamente anche XMR/USD)
   timeframe: "1h"
-  lookback_bars: 7200              # 300 giorni di storia 1h (convergenza piena EMA 200d in live)
+  lookback_bars: 7200              # 300 giorni di storia 1h (convergenza piena EMA macro in live)
   price_column: close
   use_cache: true
   features:
@@ -128,26 +128,26 @@ forecaster:
   type: noop
   params:
     model_id: "noop/portfolio_ema_inv_vol"
-    context_len: 720
+    context_len: 864
     horizon: 1
 
 strategy:
-  # Regola identica su tutti i 5 asset (zero ritocchi per-asset -> anti-overfitting)
+  # Regola identica su tutti i 5 asset (validata Walk-Forward 2021-2023 -> OOS 2024-2026)
   type: ema_trend
-  trend_fast_window: 240           # EMA 10 giorni (240h)
-  trend_slow_window: 720           # EMA 30 giorni (720h)
+  trend_fast_window: 288           # EMA 12 giorni (288h)
+  trend_slow_window: 864           # EMA 36 giorni (864h)
   trend_hysteresis_pct: 0.015      # banda isteresi +/- 1.5%
-  macro_ema_window: 4800           # Filtro macro EMA 200 giorni (4800h)
-  macro_hysteresis_pct: 0.02       # isteresi macro +/- 2.0%
+  macro_ema_window: 4320           # Filtro macro EMA 180 giorni (4320h)
+  macro_hysteresis_pct: 0.03       # isteresi macro +/- 3.0%
   macro_bear_weight: 0.0
   target_weight_bull: 0.98
-  rebalance_band: 0.12
+  rebalance_band: 0.15
 
 risk:
   enforce_market_hours: false
   max_data_age_minutes: 90
   max_exposure_pct: 0.98
-  max_drawdown_pct: 0.40           # circuit breaker sopra il MaxDD storico del 31.3%
+  max_drawdown_pct: 0.40           # circuit breaker sopra il MaxDD storico del 30.1%
   cash_reserve_pct: 0.005          # 0.5% riserva sicurezza su market order
   fee_model:
     pct: 0.0                       # Bitfinex 0% maker/taker fee
