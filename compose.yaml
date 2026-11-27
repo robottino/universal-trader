@@ -31,6 +31,7 @@ x-common-env: &common-env
 services:
   scheduler:
     image: universal-trader:cpu
+    pull_policy: build
     build:
       context: .
       dockerfile: Containerfile
@@ -54,6 +55,7 @@ services:
 
   telegram-bot:
     image: universal-trader:cpu
+    pull_policy: build
     build:
       context: .
       dockerfile: Containerfile
@@ -71,6 +73,7 @@ services:
   # One-shot manual CLI helper (`podman compose --profile cli run --rm trader doctor`)
   trader:
     image: universal-trader:cpu
+    pull_policy: build
     build:
       context: .
       dockerfile: Containerfile
